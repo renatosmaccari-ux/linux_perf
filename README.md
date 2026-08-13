@@ -40,12 +40,13 @@ pendente).
 | Categoria | Produtos |
 |---|---|
 | Web / Proxy | NGINX, Apache HTTPD, HAProxy, Varnish |
-| Banco de dados | MySQL/MariaDB, PostgreSQL, MongoDB |
+| Banco de dados | MySQL/MariaDB, PostgreSQL, MongoDB, **Oracle Database**, **SAP HANA** |
 | Cache / Chave-valor | Redis, Memcached |
 | Busca/Analytics | Elasticsearch / OpenSearch |
 | Mensageria | RabbitMQ, Apache Kafka |
 | Runtimes de aplicação | Node.js, PHP-FPM, Python (Gunicorn/uWSGI/Uvicorn/Celery), Java/JVM, .NET |
 | Containers/Orquestração | Docker, Podman, Kubernetes |
+| ERP / Enterprise | **SAP NetWeaver** (ABAP/Java: `disp+work`, `jcontrol`/`jstart`, ICM) |
 
 Serviços não cobertos por um plugin dedicado ainda aparecem no relatório através de
 um levantamento genérico de serviços `systemd` ativos e portas em escuta — nada fica
@@ -78,6 +79,20 @@ autenticação local do PostgreSQL) precisam de root para retornar dado completo
 | `MYSQL_USER` / `MYSQL_PASS` | `root` / vazio | Credenciais MySQL/MariaDB (leitura) |
 | `PG_USER` | `postgres` | Usuário de SO usado para `psql` |
 | `SLOW_QUERY_THRESHOLD` | `1` | Threshold informativo (segundos) para slow query log |
+| `ORACLE_OS_USER` | `oracle` | Usuário de SO usado para `sqlplus "/ as sysdba"` via `sudo -n` (autenticação por SO — a ferramenta nunca lida com senha de banco) |
+
+Para Oracle, a coleta OS-level (processos, listener, alert log) funciona sempre;
+as consultas via `sqlplus` (buffer cache hit ratio, tablespaces, sessões,
+objetos inválidos, wait events) exigem que `ORACLE_OS_USER` tenha
+`sudo -n` sem senha para o usuário owner do `ORACLE_HOME` — sem isso, o
+módulo degrada graciosamente e mostra só os dados de SO.
+
+Para **SAP HANA** e **SAP NetWeaver**, o usuário `<sid>adm` de cada instância
+é descoberto automaticamente a partir do processo em execução (`/usr/sap/<SID>/...`).
+`HDB info`, `systemReplicationStatus.py` e `sapcontrol` exigem `sudo -n` sem
+senha para esse usuário; sem isso, os módulos mostram apenas processos, montagens
+de disco (`/hana/data`, `/hana/log`), perfil de instância e portas — nenhuma
+senha SAP é solicitada, usada ou armazenada.
 
 ## Saída gerada
 

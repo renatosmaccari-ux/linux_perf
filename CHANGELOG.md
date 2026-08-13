@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.1.0 — 2026-08-13
+
+### Adicionado
+- Plugin **Oracle Database** (`modules/apps/oracle.sh`): detecção via
+  `ora_pmon_<SID>`, suporta múltiplas instâncias no mesmo host. Coleta
+  sempre-disponível (processos em background, `/etc/oratab`, status do
+  listener, alert log). Coleta adicional via SQL*Plus (`/ as sysdba`,
+  autenticado por SO, sem senha de banco): buffer cache hit ratio, uso de
+  tablespaces, sessões, objetos inválidos, top wait events, frequência de
+  troca de redo log. Nova variável `ORACLE_OS_USER` (default `oracle`),
+  usada com `sudo -n` (nunca solicita senha interativamente).
+- Plugin **SAP HANA** (`modules/apps/sap_hana.sh`): detecção via
+  `hdbnameserver`/`hdbindexserver`, suporta múltiplas instâncias. Processos
+  core, `HDB info` (landscape status), `systemReplicationStatus.py` quando
+  configurado, montagens de `/hana/data` e `/hana/log`, trace de alertas do
+  nameserver. Usuário `<sid>adm` de cada instância é descoberto
+  automaticamente a partir do processo em execução.
+- Plugin **SAP NetWeaver** (`modules/apps/sap_netweaver.sh`): detecção via
+  `disp+work`/`jcontrol`/`jstart`/`/usr/sap/sapservices`, suporta múltiplas
+  instâncias ABAP/Java no mesmo host. Processos de work process, leitura do
+  perfil de instância (`rdisp/wp_no_*`), ping HTTP do ICM, `sapcontrol
+  GetProcessList` best-effort.
+- Novas entradas de base de conhecimento em `lib/kb.sh` para Oracle e SAP,
+  referenciando a documentação oficial Oracle/SAP.
+
 ## 1.0.0 — 2026-08-13
 
 Reescrita completa e modularização do coletor original `server-perf-analysis.sh`

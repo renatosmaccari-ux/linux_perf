@@ -27,6 +27,8 @@ este documento é a versão legível para revisão fora da execução da ferrame
 | Redis | Hit rate ≥ 80%; `maxmemory-policy` explícita | Redis Docs — Memory Optimization, Eviction Policies |
 | MongoDB | Conexões e cache do WiredTiger dentro da capacidade planejada | MongoDB — Production Notes |
 | Elasticsearch/OpenSearch | Heap JVM ≈ 50% da RAM (máx. ~32 GB); cluster health verde | Elastic Docs — Important Settings, Cluster Health API |
+| Oracle Database | Buffer cache hit ratio ≥ 90%; tablespaces < 90% usados; sessions < 80% do limite; 0 objetos INVALID; listener ativo | Oracle Database Performance Tuning Guide; Oracle Database Administrator's Guide |
+| SAP HANA | nameserver/indexserver sempre up; `/hana/data` e `/hana/log` em volumes dedicados com headroom; landscape status GREEN | SAP HANA Administration Guide; SAP HANA Storage Requirements |
 
 ## Web / Proxy / Cache
 
@@ -53,6 +55,14 @@ este documento é a versão legível para revisão fora da execução da ferrame
 | Python (WSGI/ASGI) | Nº de workers alinhado a cores/concorrência | Gunicorn Docs — Design |
 | Java/JVM | Heap dimensionado para evitar full GC frequente | Oracle — Java Garbage Collection Tuning Guide |
 | .NET | Server GC e thread-pool avaliados sob carga | Microsoft Learn — .NET Garbage Collection |
+
+## SAP NetWeaver (ABAP / Java)
+
+| Área | Prática | Fonte |
+|---|---|---|
+| Work processes | Todos os processos `disp+work`/`jcontrol`/`jstart` configurados devem estar rodando; ≥ 80% do configurado ativo | SAP NetWeaver Administrator's Guide — SM50/SM66 |
+| ICM | Endpoint HTTP(S) do ICM (`icman/ping`) respondendo | SAP NetWeaver — ICM Configuration |
+| Lifecycle | Instâncias registradas em `/usr/sap/sapservices` e geridas via `sapstartsrv` | SAP — sapstartsrv and sapservices file |
 
 ## Containers / Orquestração
 
