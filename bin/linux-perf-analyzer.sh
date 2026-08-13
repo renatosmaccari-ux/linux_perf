@@ -20,6 +20,10 @@
 #   MYSQL_PASS             MySQL password     (default: empty / socket auth)
 #   PG_USER                PostgreSQL OS user (default: postgres)
 #   SLOW_QUERY_THRESHOLD   MySQL slow query   (default: 1 second, informational)
+#   ORACLE_OS_USER         OS user for SQL*Plus "/ as sysdba" via passwordless
+#                          sudo (default: oracle). No DB password is ever used.
+#                          SAP HANA/NetWeaver instance admin users (<sid>adm)
+#                          are derived automatically per detected instance.
 # =============================================================================
 
 set -uo pipefail
@@ -41,7 +45,7 @@ readonly MODULES_DIR
 readonly REPORT_GEN="$REPO_ROOT/report/generate_html.sh"
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
-readonly SCRIPT_VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.1.0"
 readonly TS=$(date +"%Y%m%d_%H%M%S")
 readonly HOST_=$(hostname -f 2>/dev/null || hostname)
 OUTPUT_DIR="${OUTPUT_DIR:-/tmp/linux-perf-${TS}}"
@@ -51,6 +55,7 @@ readonly MYSQL_USER="${MYSQL_USER:-root}"
 readonly MYSQL_PASS="${MYSQL_PASS:-}"
 readonly PG_USER="${PG_USER:-postgres}"
 readonly SLOW_QUERY_THRESHOLD="${SLOW_QUERY_THRESHOLD:-1}"
+readonly ORACLE_OS_USER="${ORACLE_OS_USER:-oracle}"
 
 # shellcheck source=lib/core.sh
 source "$LIB_DIR/core.sh"

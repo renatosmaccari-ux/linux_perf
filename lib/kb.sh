@@ -205,3 +205,66 @@ kb kubernetes.nodepressure "Containers/Orchestration" \
 kb kubernetes.generic "Containers/Orchestration" \
   "Review pod restart counts, resource requests/limits vs actual usage, and cluster event stream for scheduling problems." \
   "Kubernetes Docs — Resource Management for Pods and Containers: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/"
+
+# ── Oracle Database ───────────────────────────────────────────────────────
+kb oracle.buffer_cache "Database" \
+  "Buffer cache hit ratio below ~90% suggests the SGA buffer cache may be undersized for the working set, or queries are performing excessive physical reads. Review db_cache_size / sga_target and check for missing indexes first." \
+  "Oracle Database Performance Tuning Guide — Tuning the Buffer Cache: https://docs.oracle.com/en/database/oracle/oracle-database/19/tgdba/"
+
+kb oracle.tablespace "Database" \
+  "A tablespace above 90% used risks ORA-1653/ORA-1654 (unable to extend) errors, which stop writes to that tablespace. Add datafiles/autoextend headroom or archive data proactively." \
+  "Oracle Database Administrator's Guide — Managing Tablespaces: https://docs.oracle.com/en/database/oracle/oracle-database/19/admin/"
+
+kb oracle.sessions "Database" \
+  "Session count approaching the 'sessions' parameter risks ORA-00018 (maximum number of sessions exceeded). Investigate connection pooling/leaks on the application tier before raising the limit." \
+  "Oracle Database Reference — SESSIONS: https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/"
+
+kb oracle.invalid_objects "Database" \
+  "Invalid objects (views/packages/procedures with status INVALID) can cause runtime failures for dependent application code. Recompile with utlrp.sql or DBMS_UTILITY.COMPILE_SCHEMA after root-causing the invalidation." \
+  "Oracle Support — Managing Invalid Objects: https://docs.oracle.com/en/database/oracle/oracle-database/19/admin/managing-schema-objects.html"
+
+kb oracle.alert_log "Database" \
+  "ORA- errors were found in the alert log. These are the first signal for corruption, resource exhaustion (archiver stuck, redo log switch storms), or failed background processes." \
+  "Oracle Database Administrator's Guide — Managing the Alert Log: https://docs.oracle.com/en/database/oracle/oracle-database/19/admin/"
+
+kb oracle.listener "Availability" \
+  "The Oracle Net Listener is not running or not reachable. New client connections will fail with ORA-12541 even if the instance itself is healthy." \
+  "Oracle Net Services Administrator's Guide: https://docs.oracle.com/en/database/oracle/oracle-database/19/netag/"
+
+kb oracle.redo_switches "Database" \
+  "Very frequent redo log switches increase checkpoint and archiver overhead. Size redo logs so switches happen roughly every 15-30 minutes under normal load." \
+  "Oracle Database Performance Tuning Guide — Reducing Contention for Redo: https://docs.oracle.com/en/database/oracle/oracle-database/19/tgdba/"
+
+# ── SAP HANA ──────────────────────────────────────────────────────────────
+kb sap.hana_process "Database" \
+  "One or more expected SAP HANA processes (nameserver/indexserver/preprocessor/compileserver) are not running. A missing indexserver takes the tenant/system database offline." \
+  "SAP HANA Administration Guide — Processes: https://help.sap.com/docs/SAP_HANA_PLATFORM/6b94445c94ae495c83a19646e7c3fd56"
+
+kb sap.hana_disk "Storage" \
+  "SAP HANA data/log volumes above vendor-recommended thresholds risk savepoint failures and log-full service halts. Size /hana/data and /hana/log on separate fast storage with headroom per the sizing guide." \
+  "SAP HANA Storage Requirements: https://help.sap.com/docs/SAP_HANA_PLATFORM/rd7a4d3f9f3f4498a930aa7e28aa07a3f"
+
+kb sap.hana_service_state "Database" \
+  "'HDB info' / landscape status reports a service not in GREEN/running state. This typically precedes a tenant outage." \
+  "SAP HANA Administration Guide — Starting and Stopping SAP HANA: https://help.sap.com/docs/SAP_HANA_PLATFORM"
+
+kb sap.hana_memory "Database" \
+  "SAP HANA resident memory is approaching global_allocation_limit. Out-of-memory conditions in HANA reject new statements and can force emergency term evictions." \
+  "SAP HANA Administration Guide — Memory Management: https://help.sap.com/docs/SAP_HANA_PLATFORM"
+
+# ── SAP NetWeaver (ABAP / Java) ───────────────────────────────────────────
+kb sap.netweaver_process "Application Server" \
+  "Expected SAP NetWeaver processes (disp+work / jstart / jcontrol / msg_server) are not all running for a detected instance. Work-process shortage rejects new dialog/batch/update requests." \
+  "SAP NetWeaver Administrator's Guide — Starting and Stopping: https://help.sap.com/docs/SAP_NETWEAVER"
+
+kb sap.netweaver_icm "Application Server" \
+  "The ICM (Internet Communication Manager) HTTP(S) admin endpoint did not respond. This is the component serving Web GUI/OData/RFC-over-HTTP traffic for the instance." \
+  "SAP NetWeaver — ICM Configuration: https://help.sap.com/docs/SAP_NETWEAVER"
+
+kb sap.netweaver_wp_saturation "Application Server" \
+  "The running work-process count is at or near the configured maximum for this instance. New dialog steps queue or are rejected (SAP GUI: 'no more work processes')." \
+  "SAP NetWeaver Administrator's Guide — Work Process Overview (transaction SM50/SM66): https://help.sap.com/docs/SAP_NETWEAVER"
+
+kb sap.netweaver_sapservices "Application Server" \
+  "No SAP instances were found registered in /usr/sap/sapservices, so sapstartsrv-managed lifecycle/monitoring cannot be cross-checked for this host." \
+  "SAP — sapstartsrv and sapservices file: https://help.sap.com/docs/SAP_NETWEAVER"
