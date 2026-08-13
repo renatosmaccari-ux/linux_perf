@@ -1,0 +1,9 @@
+# Output from running the analyzer locally
+/linux-perf-*/
+*.findings.dat
+/test-run/
+/out/
+
+# Editor/OS cruft
+.DS_Store
+*.swp
