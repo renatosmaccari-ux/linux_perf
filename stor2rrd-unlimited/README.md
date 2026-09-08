@@ -87,7 +87,32 @@ commented out), all 28 `premium.pl` decision points, all 13 `sysInfo.free` and
 and the 739 lines of `load.sh` were inspected: nothing counts devices. In the
 7.x line that number is a licensing term, not a technical block.
 
-## Install
+## Pre-patched package
+
+`build-package.sh` turns an original XORUX tarball into one with the fork
+already applied, so the vendor's own `install.sh` / `update.sh` install it
+directly — nothing to run afterwards:
+
+```sh
+./build-package.sh stor2rrd8.08.tar ./dist
+# -> dist/stor2rrd-8.08-unlimited.tar
+tar xf stor2rrd-8.08-unlimited.tar && cd stor2rrd-8.08 && ./install.sh
+```
+
+It detects the layout, patches `dist_storage`, drops the `.s2rfork-orig`
+backups (the package *is* the fork), adds `FORK-NOTICE.txt` marking the build
+as modified per GPLv3 §5(a), and regenerates `files.sum`.
+
+On 8.x the payload is an inner `stor2rrd.tar.Z` in classic LZW format. The
+installer decompresses it with `uncompress(1)` and only falls back to
+`gunzip(1)`, so a gzip stream named `.tar.Z` would break on any host with a
+real `uncompress` — and `compress(1)` is missing from most build hosts.
+`tools/lzw_compress.py` therefore writes the genuine format, including the
+8-code padding on width changes and compress(1)'s dictionary-reset heuristic
+(without it a 50 MB payload nearly triples). `build-package.sh` decompresses
+what it just wrote and fails the build unless it matches byte for byte.
+
+## Install in place
 
 ```sh
 ./apply.sh /home/stor2rrd/stor2rrd            # install the edition module
