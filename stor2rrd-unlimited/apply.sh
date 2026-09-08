@@ -132,6 +132,10 @@ harden_file() {
     my $n = '"$LIMIT"';
     # LPAR2RRD per-platform host cap in HostCfg::getHostConnections
     s/(\&\& \$cntr > )\d+/$1$n/g;
+    # LPAR2RRD HostCfg::getUnlicensed - display only, but update.sh prints a
+    # scary "excluded HMCs" warning from it, and it never consults premium()
+    s/(\$platform eq "IBM Power Systems" \) \? )\d+/$1$n/g;
+    s/(\$platform eq "VMware" \) \? )\d+/$1$n/g;
     # STOR2RRD 8.x device cap in DeviceCfg::getActiveDeviceList
     s/(\$counter\+\+;\s*\n\s*if \( \$counter <= )\d+/$1$n/g;
     # alert rule cap

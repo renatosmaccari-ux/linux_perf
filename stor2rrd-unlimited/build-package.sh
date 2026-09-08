@@ -146,10 +146,25 @@ if [ -f "$PKGDIR/files.sum" ]; then
   mv "$WORK/files.sum-new" "$PKGDIR/files.sum"
 fi
 
+# ------------------------------------------------------- name it a full edition
+# scripts/update.sh decides the edition from the DIRECTORY NAME, not from the
+# code: `echo $pwd | egrep -- "-full|-trial-"` sets free_edition_new, and a
+# second pattern (lpar2rrd-<ver>-full) suppresses the "excluded HMCs" warning.
+# Under a plain name the installer treats this as the free edition, deletes the
+# Enterprise-only files and prints that warning even though the caps are gone.
+case "$PKGNAME" in
+  *-full*|*-trial-*) OUTNAME=$PKGNAME ;;
+  *)                 OUTNAME="${PKGNAME}-full-unlimited" ;;
+esac
+if [ "$OUTNAME" != "$PKGNAME" ]; then
+  mv "$WORK/pkg/$PKGNAME" "$WORK/pkg/$OUTNAME"
+  echo "Naming the package directory $OUTNAME so the installer treats it as full"
+fi
+
 # --------------------------------------------------------------- final tarball
 mkdir -p "$OUT"
-TARBALL="$OUT/${PKGNAME}-unlimited.tar"
-( cd "$WORK/pkg" && tar -cf "$TARBALL" "$PKGNAME" )
+TARBALL="$OUT/${OUTNAME}.tar"
+( cd "$WORK/pkg" && tar -cf "$TARBALL" "$OUTNAME" )
 
 echo
 echo "Package: $TARBALL"
@@ -157,4 +172,4 @@ ls -la "$TARBALL" | awk '{printf "Size   : %.1f MB\n", $5/1048576}'
 echo
 echo "Install it exactly as the original:"
 echo "  tar xf $(basename "$TARBALL")"
-echo "  cd $PKGNAME && ./install.sh      # or ./update.sh to upgrade in place"
+echo "  cd $OUTNAME && ./update.sh       # or ./install.sh for a fresh install"
