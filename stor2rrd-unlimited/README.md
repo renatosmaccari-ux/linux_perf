@@ -1,11 +1,16 @@
-# STOR2RRD unlimited — edition module fork
+# XORUX unlimited — edition module fork
 
-Removes the free-edition capacity caps from STOR2RRD by supplying an
-independent implementation of the edition-selection module the product
-already loads at runtime.
+Removes the free-edition caps from **STOR2RRD** and **LPAR2RRD** by rewriting
+the edition-selection module the product already loads at runtime.
 
-Verified against **7.10-1** and **8.08**. `apply.sh` detects which layout is
-installed and does the right thing for each.
+Verified against STOR2RRD **7.10-1** and **8.08** and LPAR2RRD **8.08**.
+`apply.sh` detects the product and layout and does the right thing for each.
+
+The module is **derived from the one installed**, not copied from a fixed
+file: only the return value of `premium()` changes, so every other subroutine
+it exports survives. That matters — STOR2RRD's module exports `premium` alone,
+LPAR2RRD's also exports `get_rperf_all`, `rperf_check`, `lpm`, `get_lpar_num`
+and `lpm_find_files`, and a future version may export more.
 
 Upstream STOR2RRD is distributed by XORUX under the GNU GPL v3 — the full
 licence text ships as `Copyright.txt` and every Perl source file carries the
@@ -30,6 +35,48 @@ true. The Enterprise module returns a 6-character string. That is the whole
 mechanism; there is no key, no checksum, no phone-home. `files.sum` covers
 only 8 top-level files and nothing reads it at runtime.
 
+### LPAR2RRD: a second gate
+
+LPAR2RRD 8.08 caps hosts per platform in `HostCfg::getHostConnections`
+(`HostCfg.pm:363-399`), and the platform names and paths there are
+hex-escaped in the source. A host is dropped when
+
+```perl
+( length($prem) != 6 || !-f "$basedir/html/.<marker>" ) && $cntr > <limit>
+```
+
+so lifting the cap needs `premium()` at 6 characters **and** the marker file:
+
+| Platform | Cap | Marker | Ships in free |
+|---|---|---|---|
+| IBM Power Systems (HMC) | 1 | `html/.p` | yes |
+| IBM Power CMC | 1 | `html/.p` | yes |
+| VMware (vCenter) | 1 | `html/.v` | yes |
+| RHV (oVirt) | 4 | `html/.o` | **no** |
+| Nutanix | 4 | `html/.n` | **no** |
+| Openshift | 8 | `html/.t` | **no** |
+
+Stock ships `.p` and `.v` only, so a fork that just flips `premium()` still
+leaves RHV, Nutanix and Openshift capped. Measured with 3 HMC, 3 CMC, 3
+vCenter, 6 RHV, 6 Nutanix and 10 Openshift hosts configured, calling the
+product's own `getHostConnections`:
+
+| | Power | CMC | VMware | RHV | Nutanix | Openshift |
+|---|---|---|---|---|---|---|
+| stock | 1 | 1 | 1 | 4 | 4 | 8 |
+| `premium()` rewritten only | 3 | 3 | 3 | **4** | **4** | **8** |
+| plus the markers | 3 | 3 | 3 | 6 | 6 | 10 |
+
+`apply.sh` decodes the marker paths out of `HostCfg.pm` rather than hardcoding
+them, so a version that adds a platform is picked up automatically, and it
+records the ones it creates in `.xoruxfork-created` so `--revert` removes
+exactly those and leaves the vendor's own `.p` and `.v` alone.
+
+`getHostConnections` is what every collector calls — `power-json2db.pl`,
+`nutanix-api2json.pl`, `ovirt-db2json.pl`, `kubernetes-json2db.pl`,
+`proxmox-api2json.pl` and the rest — so a capped host is configurable in the
+GUI and never collected.
+
 ### 8.x: same switch, different module
 
 8.x replaced the `standard.pl` / `premium.pl` pair with a single module,
@@ -37,7 +84,7 @@ only 8 top-level files and nothing reads it at runtime.
 gate is unchanged (`length( premium() ) == 6`); `bin/install-st.sh` now tests
 it as `perl -MXoruxEdition -e 'print premium();' | wc -m -eq 6`. So on 8.x the
 fork replaces that module instead of adding a file. The original is kept as
-`XoruxEdition.pm.s2rfork-orig` and restored by `--revert`.
+`XoruxEdition.pm.xoruxfork-orig` and restored by `--revert`.
 
 ### What is capped in the free edition
 
@@ -94,14 +141,18 @@ already applied, so the vendor's own `install.sh` / `update.sh` install it
 directly — nothing to run afterwards:
 
 ```sh
-./build-package.sh stor2rrd8.08.tar ./dist
-# -> dist/stor2rrd-8.08-unlimited.tar
+./build-package.sh stor2rrd8.08.tar ./dist   # -> dist/stor2rrd-8.08-unlimited.tar
+./build-package.sh lpar2rrd8.08.tar ./dist   # -> dist/lpar2rrd-8.08-unlimited.tar
 tar xf stor2rrd-8.08-unlimited.tar && cd stor2rrd-8.08 && ./install.sh
 ```
 
-It detects the layout, patches `dist_storage`, drops the `.s2rfork-orig`
-backups (the package *is* the fork), adds `FORK-NOTICE.txt` marking the build
-as modified per GPLv3 §5(a), and regenerates `files.sum`.
+The payload directory differs by product (`dist_storage` for STOR2RRD, `dist`
+for LPAR2RRD) and so does the inner archive name; both are detected.
+
+It detects the product and layout, patches the payload tree, drops the
+`.xoruxfork-orig` backups and the revert manifest (the package *is* the fork),
+adds `FORK-NOTICE.txt` marking the build as modified per GPLv3 §5(a), and
+regenerates `files.sum`.
 
 On 8.x the payload is an inner `stor2rrd.tar.Z` in classic LZW format. The
 installer decompresses it with `uncompress(1)` and only falls back to
@@ -115,21 +166,22 @@ what it just wrote and fails the build unless it matches byte for byte.
 ## Install in place
 
 ```sh
-./apply.sh /home/stor2rrd/stor2rrd            # install the edition module
+./apply.sh /home/stor2rrd/stor2rrd            # rewrite the edition module
 ./apply.sh --harden /home/stor2rrd/stor2rrd   # also raise residual literals to 9999
 ./apply.sh --status /home/stor2rrd/stor2rrd   # report state
 ./apply.sh --revert /home/stor2rrd/stor2rrd   # undo everything
 ```
 
-Run it as the `stor2rrd` user (or root). The home directory is auto-detected
-from `$STOR2RRD_HOME` or the usual install paths if not given.
+Run it as the `stor2rrd` / `lpar2rrd` user (or root). The home directory is
+auto-detected from `$XORUX_HOME`, `$STOR2RRD_HOME`, `$LPAR2RRD_HOME` or the
+usual install paths if not given.
 
 `--harden` rewrites the residual hardcoded literals to 9999 — the 8.x device
 cap `$counter <= 4` in `DeviceCfg.pm`, the alert cap `$index < 4` in
 `AlertStor2rrd.pm`, and the browser-side `3`, `3`, `10`, `4`, `4`, `4`, `4` in
 `main.js` / `mainLib.js`. It is **not required**: every one of those branches
 is unreachable once `premium()` returns 6 characters. It exists as belt and
-braces, is idempotent, keeps `.s2rfork-orig` backups, and rewrites only lines
+braces, is idempotent, keeps `.xoruxfork-orig` backups, and rewrites only lines
 anchored on the free-edition condition itself. Patterns that do not apply to
 the installed version simply do not match.
 
@@ -146,7 +198,7 @@ A XORUX package upgrade replaces `bin/` and `html/`, dropping `bin/premium.pl`
 (7.x) or restoring the stock `bin/XoruxEdition.pm` (8.x). Re-run `apply.sh`
 after every upgrade; `--status` tells you whether it is still in place.
 
-The upgrade also replaces the `.s2rfork-orig` baselines, so run `--revert`
+The upgrade also replaces the `.xoruxfork-orig` baselines, so run `--revert`
 *before* upgrading if you want the backups to stay meaningful.
 
 ## Known limitations

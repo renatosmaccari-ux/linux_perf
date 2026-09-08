@@ -1,8 +1,8 @@
 #!/bin/sh
 #
-# build-package.sh - produce a pre-patched STOR2RRD distribution tarball
+# build-package.sh - produce a pre-patched XORUX distribution tarball
 #
-# Copyright (C) 2026 STOR2RRD unlimited fork contributors
+# Copyright (C) 2026 XORUX unlimited fork contributors
 # Licensed under the GNU General Public License v3 or later.
 #
 # Takes an original XORUX distribution tarball and emits one with the
@@ -10,12 +10,13 @@
 # and update.sh install the fork directly - no post-install step.
 #
 # Usage:
-#   ./build-package.sh <stor2rrdX.YY.tar> [output-dir]
+#   ./build-package.sh <stor2rrdX.YY.tar|lpar2rrdX.YY.tar> [output-dir]
 #
-# Handles both package layouts:
-#   7.x  dist_storage/ sits directly in the tarball
-#   8.x  the payload is an inner stor2rrd.tar.Z (LZW), rebuilt as real .Z
+# Handles both products and both package layouts:
+#   7.x  the payload directory sits directly in the tarball
+#   8.x  the payload is an inner <product>.tar.Z (LZW), rebuilt as a real .Z
 #        so both uncompress(1) and gunzip(1) accept it
+# The payload directory is dist_storage for STOR2RRD and dist for LPAR2RRD.
 
 set -e
 
@@ -23,7 +24,7 @@ SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SRC=$1
 OUT=${2:-$PWD}
 
-[ -n "$SRC" ] || { sed -n '3,18p' "$0"; exit 2; }
+[ -n "$SRC" ] || { sed -n '3,19p' "$0"; exit 2; }
 [ -f "$SRC" ] || { echo "build-package.sh: no such file: $SRC" >&2; exit 1; }
 
 command -v python3 >/dev/null || { echo "build-package.sh: python3 is required" >&2; exit 1; }
@@ -43,59 +44,79 @@ VERSION=$(cat "$PKGDIR/version.txt" 2>/dev/null | head -1 | tr -d ' \r')
 echo "  package: $PKGNAME (version $VERSION)"
 
 # ------------------------------------------------------- locate the payload
-INNER="$PKGDIR/stor2rrd.tar.Z"
-if [ -f "$INNER" ]; then
+# 8.x wraps the tree in an inner <product>.tar.Z; 7.x ships it directly.
+# The payload directory is dist_storage for STOR2RRD and dist for LPAR2RRD.
+find_tree() {
+  for d in "$1"/dist_storage "$1"/dist; do
+    [ -d "$d" ] && echo "$d" && return 0
+  done
+  return 1
+}
+
+INNER=$(find "$PKGDIR" -maxdepth 1 -name '*.tar.Z' ! -name 'perl_aix_ssl.tar.Z' | head -1)
+if [ -n "$INNER" ]; then
   LAYOUT=8
-  echo "Expanding inner payload (stor2rrd.tar.Z)"
+  echo "Expanding inner payload ($(basename "$INNER"))"
   gzip -dc "$INNER" > "$WORK/inner.tar"
   mkdir -p "$WORK/inner"
   tar -xf "$WORK/inner.tar" -C "$WORK/inner"
-  TREE="$WORK/inner/dist_storage"
-elif [ -d "$PKGDIR/dist_storage" ]; then
+  TREE=$(find_tree "$WORK/inner") || {
+    echo "build-package.sh: no dist/ or dist_storage/ inside $(basename "$INNER")" >&2; exit 1; }
+elif TREE=$(find_tree "$PKGDIR"); then
   LAYOUT=7
-  TREE="$PKGDIR/dist_storage"
 else
-  echo "build-package.sh: no dist_storage and no stor2rrd.tar.Z in $PKGNAME" >&2
+  echo "build-package.sh: no dist/, dist_storage/ or inner .tar.Z in $PKGNAME" >&2
   exit 1
 fi
-[ -d "$TREE" ] || { echo "build-package.sh: dist_storage missing from payload" >&2; exit 1; }
-echo "  layout : ${LAYOUT}.x"
+echo "  layout : ${LAYOUT}.x, payload $(basename "$TREE")/"
 
 # -------------------------------------------------------------- apply the fork
 echo "Applying the unlimited edition module"
 "$SELF_DIR/apply.sh" --harden "$TREE" | sed 's/^/  /'
 
-# the package IS the fork; per-file backups belong to in-place installs only
-find "$TREE" -name '*.s2rfork-orig' -delete
+# the package IS the fork; per-file backups and the revert manifest belong to
+# in-place installs only
+find "$TREE" -name '*.xoruxfork-orig' -delete
+rm -f "$TREE/.xoruxfork-created"
 
 # --------------------------------------------------- mark the modified version
 # GPLv3 section 5(a): a modified version must carry prominent notices saying so.
+PRODUCT=$(echo "$PKGNAME" | sed 's/-.*//' | tr 'a-z' 'A-Z')
 cat > "$PKGDIR/FORK-NOTICE.txt" <<NOTICE
-This is a MODIFIED version of STOR2RRD $VERSION.
+This is a MODIFIED version of $PRODUCT $VERSION.
 
 It is not distributed by XORUX and is not supported by XORUX. Do not report
 problems with this build to them.
 
-Change from the version released by XORUX:
+Changes from the version released by XORUX:
 
-  The edition-selection module was replaced so that premium() returns a
-  6-character string. The product gates every free-edition capacity limit on
-  length( premium() ) == 6, so this build runs without those limits - device
-  count, alert rules, custom group members, PDF export and SAN topology.
-  The residual hardcoded literals behind those gates were additionally
-  raised to 9999.
+  The edition-selection module was rewritten so that premium() returns a
+  6-character string. The product gates every free-edition limit on
+  length( premium() ) == 6, so this build runs without them - monitored
+  device or host count, alert rules, custom group members, PDF export and
+  SAN topology. Only that return value changed; every other subroutine the
+  module exports was carried over unaltered.
 
-  ${LAYOUT}.x layout: $( [ "$LAYOUT" = 8 ] && echo "bin/XoruxEdition.pm replaced" || echo "bin/premium.pl added" )
-  Also modified: bin/DeviceCfg.pm, bin/AlertStor2rrd.pm,
-                 html/jquery/main.js, html/jquery/mainLib.js
-  (only limit literals; a file is left untouched where nothing matched)
+  ${LAYOUT}.x layout: $( [ "$LAYOUT" = 8 ] && echo "bin/XoruxEdition.pm rewritten" || echo "bin/premium.pl added, derived from bin/standard.pl" )
+
+  On LPAR2RRD each platform is gated a second time on an empty marker file
+  under html/ (.p Power and CMC, .v VMware, .o RHV, .n Nutanix, .t
+  Openshift). A platform stays capped unless premium() is 6 characters AND
+  its marker exists, and stock ships only .p and .v, so the missing markers
+  were created.
+
+  The residual hardcoded limit literals behind those gates were additionally
+  raised to 9999, in whichever of these files the product has:
+  bin/HostCfg.pm, bin/DeviceCfg.pm, bin/AlertStor2rrd.pm,
+  html/jquery/main.js, html/jquery/mainLib.js.
+  A file is left untouched where nothing matched.
 
 Features that lived only in XORUX's own Enterprise module are NOT restored by
 this change and remain unimplemented - notably scheduled report generation.
 
-STOR2RRD is distributed under the GNU General Public License v3; see
+$PRODUCT is distributed under the GNU General Public License v3; see
 Copyright.txt. This modification is offered under the same licence and with
-the same absence of warranty. "STOR2RRD" and "XORUX" are the marks of their
+the same absence of warranty. "$PRODUCT" and "XORUX" are the marks of their
 owner and are used here only to identify the software this build derives from.
 NOTICE
 echo "  wrote  : FORK-NOTICE.txt"
@@ -103,13 +124,13 @@ echo "  wrote  : FORK-NOTICE.txt"
 # ------------------------------------------------------------ repack payload
 if [ "$LAYOUT" = 8 ]; then
   echo "Repacking inner payload"
-  ( cd "$WORK/inner" && tar -cf "$WORK/inner-new.tar" dist_storage )
+  ( cd "$WORK/inner" && tar -cf "$WORK/inner-new.tar" "$(basename "$TREE")" )
   python3 "$SELF_DIR/tools/lzw_compress.py" "$WORK/inner-new.tar" "$INNER"
   # prove the installer can read back what we just wrote
   gzip -dc "$INNER" > "$WORK/verify.tar"
   cmp "$WORK/verify.tar" "$WORK/inner-new.tar" || {
     echo "build-package.sh: inner .Z failed to round-trip" >&2; exit 1; }
-  echo "  verified: stor2rrd.tar.Z decompresses byte-identical"
+  echo "  verified: $(basename "$INNER") decompresses byte-identical"
 fi
 
 # ------------------------------------------------------- regenerate files.sum
