@@ -134,6 +134,31 @@ commented out), all 28 `premium.pl` decision points, all 13 `sysInfo.free` and
 and the 739 lines of `load.sh` were inspected: nothing counts devices. In the
 7.x line that number is a licensing term, not a technical block.
 
+## Vendor bugs (`--fix-vendor-bugs`, opt-in)
+
+Defects in the stock product that have nothing to do with the free/Enterprise
+split. Kept behind their own flag so the fork's scope stays legible; the
+pre-patched packages include them.
+
+**LPAR2RRD 8.08 — the admin menu's "IBM Power Systems" page is dead.**
+`html/index.html` links to `hosts.sh?cmd=form&platform=ibm`, but `ibm` is not a
+key of `%platforms` in `bin/host_cfg.pl`, so line 144 —
+
+```perl
+my $platform = exists $platforms{ $PAR{platform} } ? $PAR{platform} : "";  # drop unknown platforms
+```
+
+— rewrites it to `""`, and the `elsif ( $platform eq "ibm" )` that renders the
+HMC/CMC tabs is unreachable. The request returns `cfgpage("")`: an empty host
+table with `data-platform=""`, an empty cron hint, and a New button that does
+nothing. Confirmed against a browser HAR from a live system: the call returns
+200 with exactly that body. The fix adds `ibm` as a key, with no `pid` and no
+`croncmd` — that branch only prints the tabs and returns, so giving it a `pid`
+would produce a spurious second cron error.
+
+The workaround is skipped on products without `bin/host_cfg.pl`, is idempotent,
+and rolls itself back if the file compiled before the edit and not after.
+
 ## Pre-patched package
 
 `build-package.sh` turns an original XORUX tarball into one with the fork
@@ -167,6 +192,7 @@ what it just wrote and fails the build unless it matches byte for byte.
 
 ```sh
 ./apply.sh /home/stor2rrd/stor2rrd            # rewrite the edition module
+./apply.sh --fix-vendor-bugs /home/lpar2rrd/lpar2rrd   # + vendor bug workarounds
 ./apply.sh --harden /home/stor2rrd/stor2rrd   # also raise residual literals to 9999
 ./apply.sh --status /home/stor2rrd/stor2rrd   # report state
 ./apply.sh --revert /home/stor2rrd/stor2rrd   # undo everything

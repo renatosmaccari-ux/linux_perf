@@ -72,7 +72,7 @@ echo "  layout : ${LAYOUT}.x, payload $(basename "$TREE")/"
 
 # -------------------------------------------------------------- apply the fork
 echo "Applying the unlimited edition module"
-"$SELF_DIR/apply.sh" --harden "$TREE" | sed 's/^/  /'
+"$SELF_DIR/apply.sh" --harden --fix-vendor-bugs "$TREE" | sed 's/^/  /'
 
 # the package IS the fork; per-file backups and the revert manifest belong to
 # in-place installs only
@@ -110,6 +110,17 @@ Changes from the version released by XORUX:
   bin/HostCfg.pm, bin/DeviceCfg.pm, bin/AlertStor2rrd.pm,
   html/jquery/main.js, html/jquery/mainLib.js.
   A file is left untouched where nothing matched.
+
+Separately, and unrelated to the free/Enterprise split, this build carries a
+workaround for a defect in the stock product:
+
+  LPAR2RRD 8.08 - html/index.html links the admin menu to
+  hosts.sh?cmd=form&platform=ibm, but "ibm" is not a key of %platforms in
+  bin/host_cfg.pl, so that file rewrites it to "" ("drop unknown platforms")
+  and the branch rendering the HMC/CMC tabs never runs: the page returns an
+  empty host table and the New button does nothing. "ibm" was added as a
+  key so that branch is reachable. bin/host_cfg.pl is modified only on
+  products that have it.
 
 Features that lived only in XORUX's own Enterprise module are NOT restored by
 this change and remain unimplemented - notably scheduled report generation.

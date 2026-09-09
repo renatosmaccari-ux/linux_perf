@@ -21,17 +21,22 @@
 # some of them, so the missing ones are created here.
 #
 # Usage:
-#   ./apply.sh [--harden] [--force] [<PRODUCT_HOME>]
-#   ./apply.sh --revert            [<PRODUCT_HOME>]
-#   ./apply.sh --status            [<PRODUCT_HOME>]
+#   ./apply.sh [--harden] [--fix-vendor-bugs] [--force] [<PRODUCT_HOME>]
+#   ./apply.sh --revert                                 [<PRODUCT_HOME>]
+#   ./apply.sh --status                                 [<PRODUCT_HOME>]
 #
-#   --harden   also raise the residual hardcoded limit literals to 9999.
-#              Not required - those branches are unreachable once the
-#              edition module is in place - belt and braces only.
-#   --force    overwrite an existing 7.x bin/premium.pl. Refused by default
-#              so a genuine XORUX Enterprise module is never clobbered.
-#   --revert   undo everything this script did.
-#   --status   report current state, change nothing.
+#   --harden            also raise the residual hardcoded limit literals to
+#                       9999. Not required - those branches are unreachable
+#                       once the edition module is in place - belt and braces.
+#   --fix-vendor-bugs   repair defects in the stock product that have nothing
+#                       to do with the free/Enterprise split. Opt-in and kept
+#                       separate so the fork's scope stays legible. See
+#                       vendorfix_file() for what each one is.
+#   --force             overwrite an existing 7.x bin/premium.pl. Refused by
+#                       default so a genuine Enterprise module is never
+#                       clobbered.
+#   --revert            undo everything this script did.
+#   --status            report current state, change nothing.
 
 set -e
 
@@ -40,6 +45,7 @@ MARKER='XORUX unlimited fork'
 EDITION_STRING=forked          # must be exactly 6 characters
 
 HARDEN=0
+VENDORFIX=0
 FORCE=0
 MODE=apply
 HOME_ARG=""
@@ -47,10 +53,11 @@ HOME_ARG=""
 for arg in "$@"; do
   case "$arg" in
     --harden) HARDEN=1 ;;
+    --fix-vendor-bugs) VENDORFIX=1 ;;
     --force)  FORCE=1 ;;
     --revert) MODE=revert ;;
     --status) MODE=status ;;
-    -h|--help) sed -n '3,35p' "$0"; exit 0 ;;
+    -h|--help) sed -n '3,42p' "$0"; exit 0 ;;
     -*) echo "apply.sh: unknown option: $arg" >&2; exit 2 ;;
     *)  HOME_ARG="$arg" ;;
   esac
@@ -98,6 +105,10 @@ ALERTPM="$S2R/bin/AlertStor2rrd.pm"
 MAINJS="$S2R/html/jquery/main.js"
 LIBJS="$S2R/html/jquery/mainLib.js"
 HARDEN_FILES="$HOSTCFG $DEVCFG $ALERTPM $MAINJS $LIBJS"
+
+# files touched by --fix-vendor-bugs, kept apart from the cap removal
+HOSTCFGPL="$S2R/bin/host_cfg.pl"
+VENDORFIX_FILES="$HOSTCFGPL"
 
 MANIFEST="$S2R/.xoruxfork-created"
 
@@ -156,6 +167,43 @@ harden_file() {
   fi
 }
 
+# ------------------------------------------------------- vendor bug workarounds
+# Strictly separate from the cap removal: these repair defects in the stock
+# product that have nothing to do with the free/Enterprise split.
+#
+#   LPAR2RRD 8.08 - the admin menu in html/index.html links to
+#   hosts.sh?cmd=form&platform=ibm, but "ibm" is not a key of %platforms in
+#   bin/host_cfg.pl, so line 144 rewrites it to "" ("drop unknown platforms")
+#   and the elsif that renders the HMC/CMC tabs is unreachable. The page comes
+#   back with an empty host table and the New button does nothing.
+perl_ok() {
+  # host_cfg.pl pulls in the product's own modules and CPAN deps, so a bare
+  # perl -c can fail for reasons that have nothing to do with our edit. Give
+  # it the product's lib paths and compare before/after rather than demanding
+  # an absolute pass.
+  perl -I"$S2R/bin" -I"$S2R/lib" -c "$1" >/dev/null 2>&1
+}
+
+vendorfix_file() {
+  f=$1
+  [ -f "$f" ] || return 0
+  grep -q '^  ibm  *=>' "$f" && return 0          # already fixed
+  grep -q '^  power  *=> { longname => "IBM Power Systems"' "$f" || return 0
+
+  compiled_before=0
+  perl_ok "$f" && compiled_before=1
+
+  [ -f "$f.xoruxfork-orig" ] || cp -p "$f" "$f.xoruxfork-orig"
+  sed -i '/^  power  *=> { longname => "IBM Power Systems"/a\  ibm           => { longname => "IBM Power Systems" },' "$f"
+
+  if [ "$compiled_before" -eq 1 ] && ! perl_ok "$f"; then
+    echo "apply.sh: $f compiled before the vendor fix and not after, restoring" >&2
+    mv "$f.xoruxfork-orig" "$f"
+    return 1
+  fi
+  echo "  fixed   : ${f#$S2R/} (platform=ibm now reaches the HMC/CMC tabs)"
+}
+
 # ---------------------------------------------------------------------- status
 report_status() {
   echo "product home  : $S2R"
@@ -177,6 +225,9 @@ report_status() {
   fi
   for f in $HARDEN_FILES; do
     [ -f "$f.xoruxfork-orig" ] && echo "hardened      : ${f#$S2R/}"
+  done
+  for f in $VENDORFIX_FILES; do
+    [ -f "$f.xoruxfork-orig" ] && echo "vendor fix    : ${f#$S2R/}"
   done
   exit 0
 }
@@ -203,7 +254,7 @@ if [ "$MODE" = revert ]; then
     done < "$MANIFEST"
     rm -f "$MANIFEST"
   fi
-  for f in $HARDEN_FILES; do
+  for f in $HARDEN_FILES $VENDORFIX_FILES; do
     [ -f "$f.xoruxfork-orig" ] && mv "$f.xoruxfork-orig" "$f" && echo "  restored: ${f#$S2R/}"
   done
   echo "Done. Restart the GUI / wait for the next collection cycle."
@@ -271,6 +322,11 @@ done
 if [ "$HARDEN" -eq 1 ]; then
   echo "Raising residual hardcoded limits to $LIMIT"
   for f in $HARDEN_FILES; do harden_file "$f"; done
+fi
+
+if [ "$VENDORFIX" -eq 1 ]; then
+  echo "Applying vendor bug workarounds"
+  for f in $VENDORFIX_FILES; do vendorfix_file "$f"; done
 fi
 
 # force the GUI to rebuild menu.txt so the edition flag flips to full
