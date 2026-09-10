@@ -21,7 +21,8 @@
 # some of them, so the missing ones are created here.
 #
 # Usage:
-#   ./apply.sh [--harden] [--fix-vendor-bugs] [--force] [<PRODUCT_HOME>]
+#   ./apply.sh [--harden] [--fix-vendor-bugs] [--fix-permissions] [--force]
+#              [<PRODUCT_HOME>]
 #   ./apply.sh --revert                                 [<PRODUCT_HOME>]
 #   ./apply.sh --status                                 [<PRODUCT_HOME>]
 #
@@ -32,6 +33,11 @@
 #                       to do with the free/Enterprise split. Opt-in and kept
 #                       separate so the fork's scope stays legible. See
 #                       vendorfix_file() for what each one is.
+#   --fix-permissions   make the tree group-readable so the web server user
+#                       (which runs the CGI) can read it alongside the product
+#                       user (which runs collection). Additive only; --revert
+#                       does NOT undo it. A group membership change is a system
+#                       change, so it is printed for you to run, never applied.
 #   --force             overwrite an existing 7.x bin/premium.pl. Refused by
 #                       default so a genuine Enterprise module is never
 #                       clobbered.
@@ -46,6 +52,7 @@ EDITION_STRING=forked          # must be exactly 6 characters
 
 HARDEN=0
 VENDORFIX=0
+FIXPERMS=0
 FORCE=0
 MODE=apply
 HOME_ARG=""
@@ -54,6 +61,7 @@ for arg in "$@"; do
   case "$arg" in
     --harden) HARDEN=1 ;;
     --fix-vendor-bugs) VENDORFIX=1 ;;
+    --fix-permissions) FIXPERMS=1 ;;
     --force)  FORCE=1 ;;
     --revert) MODE=revert ;;
     --status) MODE=status ;;
@@ -204,6 +212,60 @@ vendorfix_file() {
   echo "  fixed   : ${f#$S2R/} (platform=ibm now reaches the HMC/CMC tabs)"
 }
 
+# ------------------------------------------------------------ permissions
+# Two different users touch this tree: the product user runs collection from
+# cron, and the web server user runs the CGI. update.sh chowns the tree to
+# whoever runs it and explicitly skips etc/web_config ("do not touch
+# etc/web_config here!"), so a chown to the product user can leave the CGI
+# unable to read hosts.json - which surfaces as "authorization failed" on
+# every device, because the test gets no credentials to send.
+web_user() {
+  for u in apache httpd www-data nginx wwwrun; do
+    id "$u" >/dev/null 2>&1 && echo "$u" && return 0
+  done
+  return 1
+}
+
+fix_permissions() {
+  grp=$(ls -ld "$S2R" | awk '{print $4}')
+  echo "  group of $S2R: $grp"
+
+  chmod -R g+rX "$S2R"
+  echo "  applied : chmod -R g+rX (group can read and traverse)"
+
+  for d in etc/web_config tmp logs; do
+    [ -d "$S2R/$d" ] && chmod g+w "$S2R/$d" && echo "  applied : chmod g+w $d"
+  done
+
+  # the CGI also has to traverse every directory above the tree to reach it
+  d=$(dirname "$S2R")
+  while [ "$d" != "/" ] && [ "$d" != "." ] && [ -n "$d" ]; do
+    mode=$(ls -ld "$d" | awk '{print $1}')
+    gx=$(echo "$mode" | cut -c7)    # group execute, s when setgid
+    ox=$(echo "$mode" | cut -c10)   # other execute, t when sticky
+    case "$gx$ox" in
+      *x*|*s*|*t*) : ;;
+      *) echo "  ACTION  : $d ($mode) is not traversable by group or other,"
+         echo "            so the web server cannot reach the tree. Run as root:"
+         echo "              chmod o+x $d" ;;
+    esac
+    d=$(dirname "$d")
+  done
+
+  wu=$(web_user) || {
+    echo "  note    : no web server user found among apache/httpd/www-data/nginx/wwwrun"
+    return 0
+  }
+  if id -nG "$wu" 2>/dev/null | tr ' ' '\n' | grep -qx "$grp"; then
+    echo "  ok      : $wu is already in group $grp"
+  else
+    echo "  ACTION  : $wu is NOT in group $grp. Run as root, then restart the web server:"
+    echo "              usermod -aG $grp $wu"
+    echo "            A group membership change is system-wide, outside this"
+    echo "            product tree, so it is not applied automatically."
+  fi
+}
+
 # ---------------------------------------------------------------------- status
 report_status() {
   echo "product home  : $S2R"
@@ -327,6 +389,11 @@ fi
 if [ "$VENDORFIX" -eq 1 ]; then
   echo "Applying vendor bug workarounds"
   for f in $VENDORFIX_FILES; do vendorfix_file "$f"; done
+fi
+
+if [ "$FIXPERMS" -eq 1 ]; then
+  echo "Opening group access so the web server user can read the tree"
+  fix_permissions
 fi
 
 # force the GUI to rebuild menu.txt so the edition flag flips to full

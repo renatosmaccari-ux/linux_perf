@@ -79,6 +79,14 @@ echo "Applying the unlimited edition module"
 find "$TREE" -name '*.xoruxfork-orig' -delete
 rm -f "$TREE/.xoruxfork-created"
 
+# The product user runs collection from cron and the web server user runs the
+# CGI, so both need to read the tree. Ship it group-readable; the installer's
+# `cp -R` masks the source mode with the calling umask, so this only holds if
+# install.sh/update.sh run under a umask that leaves group bits alone (022).
+chmod -R g+rX "$TREE"
+[ -d "$TREE/etc/web_config" ] && chmod g+w "$TREE/etc/web_config"
+echo "  perms  : payload made group-readable (etc/web_config group-writable)"
+
 # --------------------------------------------------- mark the modified version
 # GPLv3 section 5(a): a modified version must carry prominent notices saying so.
 PRODUCT=$(echo "$PKGNAME" | sed 's/-.*//' | tr 'a-z' 'A-Z')
@@ -121,6 +129,26 @@ workaround for a defect in the stock product:
   empty host table and the New button does nothing. "ibm" was added as a
   key so that branch is reachable. bin/host_cfg.pl is modified only on
   products that have it.
+
+File modes in this payload were opened to the group (g+rX, and g+w on
+etc/web_config) because two users share the tree: the product user, which runs
+collection from cron, and the web server user, which runs the CGI. update.sh
+chowns the tree to whoever runs it but deliberately skips etc/web_config, so
+after a plain chown to the product user the CGI can no longer read hosts.json
+and every device test reports "authorization failed".
+
+  Install or update with a umask of 022. The installer copies with cp -R,
+  which masks the source mode with the calling umask, so a umask of 027 or 077
+  strips these bits back off.
+
+  One step no tarball can carry, because it is a system change outside the
+  product tree - run it as root once, then restart the web server:
+
+      usermod -aG <product group> <web server user>
+      # e.g. usermod -aG stor2rrd apache && systemctl restart httpd
+
+  apply.sh --fix-permissions reports both, and repairs an existing
+  installation in place.
 
 Features that lived only in XORUX's own Enterprise module are NOT restored by
 this change and remain unimplemented - notably scheduled report generation.

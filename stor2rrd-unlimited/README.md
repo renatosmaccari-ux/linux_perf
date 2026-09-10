@@ -159,6 +159,46 @@ would produce a spurious second cron error.
 The workaround is skipped on products without `bin/host_cfg.pl`, is idempotent,
 and rolls itself back if the file compiled before the edit and not after.
 
+## Shared-tree permissions (`--fix-permissions`, opt-in)
+
+Two users touch an installed tree:
+
+| user | role |
+|---|---|
+| the product user (`lpar2rrd` / `stor2rrd`) | runs collection from cron |
+| the web server user (`apache`, `www-data`, …) | runs the CGI under `html/` |
+
+`scripts/update.sh` chowns the tree to whoever runs it, and at line 1188 carries
+`# do not touch etc/web_config here!` — so a plain `chown -R lpar2rrd:lpar2rrd`
+leaves the CGI unable to read `etc/web_config/hosts.json`. The symptom is not a
+permission error: the connection test finds no credentials to send and every
+device reports **authorization failed**, which looks exactly like a wrong
+password on the HMC side.
+
+`--fix-permissions` repairs an installed tree:
+
+- `chmod -R g+rX` over the whole tree
+- `chmod g+w` on `etc/web_config`, `tmp` and `logs`
+- checks every directory *above* the tree for a traversal bit, since the CGI
+  has to reach it (a `chmod 700 /home/lpar2rrd` blocks it just as effectively)
+- checks whether the web server user is in the tree's group
+
+The last item is deliberately **reported, not applied** — group membership is a
+system change outside the product tree, and it needs root plus a web server
+restart:
+
+```sh
+usermod -aG stor2rrd apache && systemctl restart httpd
+```
+
+The flag is **additive**: `--revert` does not undo it, because the prior modes
+are not recorded.
+
+`build-package.sh` applies the same `g+rX` to the payload, so a fresh install
+starts correct. Run `install.sh` / `update.sh` under **umask 022** — the
+installer copies with `cp -R`, which masks the source mode with the caller's
+umask, and a umask of 027 or 077 strips the group bits straight back off.
+
 ## Pre-patched package
 
 `build-package.sh` turns an original XORUX tarball into one with the fork
@@ -194,6 +234,7 @@ what it just wrote and fails the build unless it matches byte for byte.
 ./apply.sh /home/stor2rrd/stor2rrd            # rewrite the edition module
 ./apply.sh --fix-vendor-bugs /home/lpar2rrd/lpar2rrd   # + vendor bug workarounds
 ./apply.sh --harden /home/stor2rrd/stor2rrd   # also raise residual literals to 9999
+./apply.sh --fix-permissions /home/lpar2rrd/lpar2rrd    # + shared-tree permissions
 ./apply.sh --status /home/stor2rrd/stor2rrd   # report state
 ./apply.sh --revert /home/stor2rrd/stor2rrd   # undo everything
 ```
