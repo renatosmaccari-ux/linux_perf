@@ -159,6 +159,45 @@ would produce a spurious second cron error.
 The workaround is skipped on products without `bin/host_cfg.pl`, is idempotent,
 and rolls itself back if the file compiled before the edit and not after.
 
+**LPAR2RRD — one sick VIOS blanks every healthy VIOS on the same server.**
+`bin/hmc_rest_api.pl:1536` fetches all VIOS of a managed system in one call:
+
+```perl
+eval { $conf = callAPI("rest/api/uom/ManagedSystem/$uid/VirtualIOServer"); };
+```
+
+When a single VIOS cannot serve its `PhysicalVolume` inventory the HMC answers
+**500 for the whole collection**. `callAPI` returns `-1`, the `else` branch
+prints `Rest API problem vioses`, `is_vios` stays empty, and `getServerNPIV`
+bails with `VIOS response is not an ARRAY!`. The managed system then loses the
+SEA, NPIV and VSCSI data of its *working* VIOS as well — LAN, SAN and SAS all
+render empty, and both VIOS drop out of the tree once their `.rrm` files age
+past 30 days.
+
+Measured on a live HMC (same result from both HMCs managing the server):
+
+| request | result |
+|---|---|
+| `…/VirtualIOServer` (collection) | **500** `Error occurred while querying for PhysicalVolume from VIOS vios164x with ID 1` |
+| `…/VirtualIOServer?group=None` | 200 |
+| `…/VirtualIOServer/<uuid vios164x>` | **500** |
+| `…/VirtualIOServer/<uuid vios264x>` | **200** |
+
+The fix inserts a fallback before `my @LPs;`: when `$conf` is not a HASH, it
+enumerates with `?group=None`, calls each VIOS by UUID, and rebuilds `$conf` in
+the exact shape the existing `elsif` already consumes — so nothing downstream
+changes. VIOS that fail individually are logged and skipped; if none answers,
+`$conf` is left alone and the original behaviour stands. `callAPI` passes its
+argument through verbatim, so the query string needs no change there.
+
+The patch body lives in `patches/vios-collection-fallback.pl`. Verified against
+six scenarios with a stub harness — the live 64X case, both VIOS healthy, no
+VIOS answering, `group=None` also failing, a single-VIOS feed, and a healthy
+collection (fallback inert, zero extra HMC calls).
+
+This is a workaround, not a cure: the broken VIOS's data is still unavailable,
+because the HMC will not serve it. The real fix is on the HMC/VIOS side.
+
 ## Shared-tree permissions (`--fix-permissions`, opt-in)
 
 Two users touch an installed tree:

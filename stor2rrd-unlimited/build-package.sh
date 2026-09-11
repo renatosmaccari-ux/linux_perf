@@ -130,6 +130,16 @@ workaround for a defect in the stock product:
   key so that branch is reachable. bin/host_cfg.pl is modified only on
   products that have it.
 
+  LPAR2RRD - one sick VIOS blanks every healthy one on the same server.
+  bin/hmc_rest_api.pl asks the HMC for ManagedSystem/<uuid>/VirtualIOServer
+  in a single call. When one VIOS cannot serve its PhysicalVolume inventory
+  the HMC answers 500 for that whole collection, callAPI returns -1, is_vios
+  stays empty, and the managed system also loses the SEA, NPIV and VSCSI data
+  of its working VIOS - the LAN, SAN and SAS views all go blank. The call now
+  falls back to ?group=None to enumerate the VIOS and then one call per VIOS,
+  keeping whichever answer and logging the ones that do not. It stays inert
+  while the collection call succeeds.
+
 File modes in this payload were opened to the group (g+rX, and g+w on
 etc/web_config) because two users share the tree: the product user, which runs
 collection from cron, and the web server user, which runs the CGI. update.sh

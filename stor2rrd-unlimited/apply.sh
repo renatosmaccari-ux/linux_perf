@@ -46,6 +46,8 @@
 
 set -e
 
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
 LIMIT=9999
 MARKER='XORUX unlimited fork'
 EDITION_STRING=forked          # must be exactly 6 characters
@@ -116,7 +118,8 @@ HARDEN_FILES="$HOSTCFG $DEVCFG $ALERTPM $MAINJS $LIBJS"
 
 # files touched by --fix-vendor-bugs, kept apart from the cap removal
 HOSTCFGPL="$S2R/bin/host_cfg.pl"
-VENDORFIX_FILES="$HOSTCFGPL"
+RESTAPIPL="$S2R/bin/hmc_rest_api.pl"
+VENDORFIX_FILES="$HOSTCFGPL $RESTAPIPL"
 
 MANIFEST="$S2R/.xoruxfork-created"
 
@@ -193,6 +196,47 @@ perl_ok() {
 }
 
 vendorfix_file() {
+  case ${1##*/} in
+    host_cfg.pl)     vendorfix_hostcfg "$1" ;;
+    hmc_rest_api.pl) vendorfix_restapi "$1" ;;
+  esac
+}
+
+# LPAR2RRD - one VIOS with a broken PhysicalVolume inventory makes the HMC
+#   answer 500 for the whole ManagedSystem/<uuid>/VirtualIOServer collection,
+#   so hmc_rest_api.pl gets nothing and every healthy VIOS on that server
+#   loses its SEA, NPIV and VSCSI data too. Fall back to ?group=None plus one
+#   call per VIOS. Needs SELF_DIR/patches/vios-collection-fallback.pl.
+vendorfix_restapi() {
+  f=$1
+  [ -f "$f" ] || return 0
+  grep -q 'xoruxfork: VIOS collection fallback' "$f" && return 0   # already fixed
+  grep -q 'my @LPs;' "$f" || return 0
+  if [ ! -f "$SELF_DIR/patches/vios-collection-fallback.pl" ]; then
+    echo "apply.sh: patches/vios-collection-fallback.pl missing, skipping $f" >&2
+    return 0
+  fi
+
+  compiled_before=0
+  perl_ok "$f" && compiled_before=1
+
+  [ -f "$f.xoruxfork-orig" ] || cp -p "$f" "$f.xoruxfork-orig"
+
+  PATCHBODY="$SELF_DIR/patches/vios-collection-fallback.pl" perl -0777 -i -pe '
+    BEGIN { local $/; open my $fh, "<", $ENV{PATCHBODY} or die; $body = <$fh> }
+    s{(\n)(  my \@LPs;\n)}{$1$body$2}
+      or die "apply.sh: no VIOS collection block to patch\n";
+  ' "$f" || { mv "$f.xoruxfork-orig" "$f"; return 1; }
+
+  if [ "$compiled_before" -eq 1 ] && ! perl_ok "$f"; then
+    echo "apply.sh: $f compiled before the vendor fix and not after, restoring" >&2
+    mv "$f.xoruxfork-orig" "$f"
+    return 1
+  fi
+  echo "  fixed   : ${f#$S2R/} (a broken VIOS no longer blanks the healthy ones)"
+}
+
+vendorfix_hostcfg() {
   f=$1
   [ -f "$f" ] || return 0
   grep -q '^  ibm  *=>' "$f" && return 0          # already fixed
