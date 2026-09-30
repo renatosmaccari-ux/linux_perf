@@ -21,7 +21,7 @@ my $updir   = "$topodir/uploads";
 my $logfile = "$basedir/logs/topology.log";
 
 my $MAX_BYTES = 64 * 1024 * 1024;
-my %OK_EXT = ( csv => 1, txt => 1, xlsx => 1 );
+my %OK_EXT = ( csv => 1, txt => 1, xlsx => 1, xls => 1 );
 
 my $self = $ENV{SCRIPT_NAME} || "topology.sh";
 
@@ -99,7 +99,7 @@ if ( defined $ENV{CONTENT_TYPE} && $ENV{CONTENT_TYPE} =~ /multipart\/form-data/ 
     push @msg, [ "erro", "Nenhum arquivo recebido." ];
   }
   elsif ( !$name ) {
-    push @msg, [ "erro", "Nome ou extensao nao aceitos. Use .csv, .txt ou .xlsx." ];
+    push @msg, [ "erro", "Nome ou extensao nao aceitos. Use .csv, .txt, .xls ou .xlsx." ];
   }
   else {
     my $dest = "$updir/$name";
@@ -162,6 +162,34 @@ if ( $cmd eq "rebuild" || $subiu ) {
   else {
     push @msg, [ "erro", "Script de reconstrucao ausente: topology/bin." ];
   }
+}
+
+# ------------------------------------------------- answer the graph page
+# The map page uploads from inside its own panel and stays where it is, so it
+# needs a verdict it can read rather than a whole HTML page.
+if ( param_of("fmt") eq "json" ) {
+  my $erro = "";
+  my $ok   = "";
+  for my $m (@msg) {
+    $erro = $m->[1] if $m->[0] eq "erro" && !$erro;
+    $ok   = $m->[1] if $m->[0] eq "ok";
+  }
+  my ( $n, $l ) = ( 0, 0 );
+  if ( open( my $jh, "<", "$topodir/topologia.json" ) ) {
+    local $/;
+    my $raw = <$jh>;
+    close($jh);
+    $n = () = $raw =~ /"id":/g;
+    $l = () = $raw =~ /"ev":/g;
+  }
+  my $texto = $erro || $ok || "Nada a fazer.";
+  $texto =~ s/(["\\])/\\$1/g;
+  $texto =~ s/[\r\n\t]/ /g;
+  print "Content-type: application/json; charset=utf-8\n";
+  print "Cache-Control: no-store\n\n";
+  printf qq({"ok":%s,"msg":"%s","nos":%d,"ligacoes":%d}\n),
+    ( $erro ? "false" : "true" ), $texto, $n, $l;
+  exit 0;
 }
 
 # --------------------------------------------------------------------- page
@@ -253,7 +281,7 @@ print <<"ESTADO";
   <button class="btn" type="submit">Enviar e reconstruir</button>
   <a class="btn" href="@{[ esc($self) ]}?cmd=rebuild">Somente reconstruir</a>
 </form>
-<p class="nota">Aceita <code>.csv</code>, <code>.txt</code> e <code>.xlsx</code>, ate @{[ int($MAX_BYTES/1048576) ]} MB.
+<p class="nota">Aceita <code>.csv</code>, <code>.txt</code>, <code>.xls</code> e <code>.xlsx</code>, ate @{[ int($MAX_BYTES/1048576) ]} MB.
 Colunas reconhecidas, em portugues ou ingles: <code>Hostname</code>, <code>IP Address</code>,
 <code>Environment</code>, <code>Location</code>, <code>Function</code>,
 <code>Operation Systems</code>, <code>Cluster/Physical Host</code>. As demais sao ignoradas,

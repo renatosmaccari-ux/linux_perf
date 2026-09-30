@@ -327,6 +327,33 @@ def linhas_planilha(caminho):
                 yield {norm_col(k): v for k, v in r.items() if k}
         return
 
+    if caminho.lower().endswith(".xls"):
+        # o formato antigo do Excel nao e lido pelo openpyxl; xlrd < 2.0 le,
+        # e sem ele o caminho util e salvar como .xlsx ou CSV
+        try:
+            import xlrd
+        except ImportError:
+            sys.stderr.write(
+                "topo-build: %s e Excel antigo (.xls) e o modulo xlrd nao esta "
+                "instalado; salve como .xlsx ou CSV e importe de novo\n"
+                % os.path.basename(caminho))
+            return
+        livro = xlrd.open_workbook(caminho)
+        for aba in livro.sheets():
+            cabecalho = None
+            for i in range(aba.nrows):
+                linha = [c.value for c in aba.row(i)]
+                if cabecalho is None:
+                    textos = [c for c in linha
+                              if isinstance(c, str) and c.strip()]
+                    if len(textos) >= 3:
+                        cabecalho = [norm_col(c) for c in linha]
+                    continue
+                yield dict((cabecalho[j], linha[j])
+                           for j in range(min(len(cabecalho), len(linha)))
+                           if cabecalho[j])
+        return
+
     try:
         import openpyxl
     except ImportError:
@@ -362,7 +389,7 @@ def carrega_baseline(g, diretorio):
     arquivos = sorted(glob.glob(os.path.join(diretorio, "*")))
     lidos = 0
     for caminho in arquivos:
-        if not caminho.lower().endswith((".csv", ".txt", ".xlsx")):
+        if not caminho.lower().endswith((".csv", ".txt", ".xls", ".xlsx")):
             continue
         try:
             registros = list(linhas_planilha(caminho))

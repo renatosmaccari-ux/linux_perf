@@ -79,12 +79,22 @@ and writes one row per LPAR plus one per frame: model, serial, IP, state,
 processors, memory, disks, filesystems, LAN/SAN/SAS aliases. It supplies the
 frame → LPAR relationships nothing else knows.
 
-**Baseline.** Spreadsheets and CSVs uploaded through *Topologia: dados*. Column
-names are matched in Portuguese or English; every sheet of a workbook is read.
-Recognised: `Hostname`, `IP Address`, `Environment`, `Location`, `Function`,
-`Operation Systems`, `Cluster/Physical Host`, `Manufacturer`, `Status`.
-`.xlsx` needs `openpyxl`; without it the file is skipped with a warning, never
-an exception.
+**Baseline.** Spreadsheets and CSVs imported from the map's own panel
+(*Inventário › Importar planilha ou CSV*) or from the *Topologia: dados* page.
+Column names are matched in Portuguese or English; every sheet of a workbook is
+read. Recognised: `Hostname`, `IP Address`, `Environment`, `Location`,
+`Function`, `Operation Systems`, `Cluster/Physical Host`, `Manufacturer`,
+`Status`.
+
+`.xlsx` needs `openpyxl` and `.xls` needs `xlrd`; without the module the file
+is skipped with a message naming it and saying to save as `.xlsx` or CSV — the
+other files in the same run still import. Nothing raises.
+
+The import lives **inside the map**: the panel has an Inventário section whose
+button opens a dialog, posts the file to the CGI, and reloads once the rebuild
+answers, so enriching the data never means leaving the graph. The page fetches
+`topologia.json` with a changing query parameter, because after an import a
+cached copy would show the previous map.
 
 **Observed connections.** The collector kits emit
 `categoria,escopo,chave,valor` rows; the builder reads the `conexao` and `meta`

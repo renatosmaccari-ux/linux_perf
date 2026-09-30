@@ -293,12 +293,19 @@ add_topology() {
   done
 
   # ---------------------------------------------------------------- the page
-  cp -p "$TOPO_SRC/topologia.html" "$S2R/html/"
+  # the page uploads from its own panel, so it needs this product's CGI path
+  cgiweb=$(basename "$CGIDIR")
+  sed "s|__TOPO_CGI__|/$cgiweb/topology.sh|g" \
+    "$TOPO_SRC/topologia.html" > "$S2R/html/topologia.html"
+  if grep -q '__TOPO_CGI__' "$S2R/html/topologia.html"; then
+    echo "apply.sh: could not set the CGI path in topologia.html" >&2
+    return 1
+  fi
   # never overwrite a map the site has already built
   [ -f "$S2R/html/topologia.json" ] || cp -p "$TOPO_SRC/topologia.json" "$S2R/html/"
   echo "  installed: html/topologia.html, html/topologia.json"
   if [ -d "$S2R/www" ]; then
-    cp -p "$TOPO_SRC/topologia.html" "$S2R/www/"
+    cp -p "$S2R/html/topologia.html" "$S2R/www/"
     [ -f "$S2R/www/topologia.json" ] || cp -p "$TOPO_SRC/topologia.json" "$S2R/www/"
   fi
 
@@ -351,7 +358,6 @@ SHIM
   if [ -f "$md" ]; then
     [ -f "$md.xoruxfork-orig" ] || cp -p "$md" "$md.xoruxfork-orig"
     doc=$(grep '^T:doc:' "$md" | head -1)
-    cgiweb=$(basename "$CGIDIR")
     if [ -n "$doc" ]; then
       grep -q '^T:topo:' "$md" || printf '%s\n' "$doc" \
         | sed 's|^T:doc:[^:]*:[^:]*:|T:topo:Mapa de dependencias:topologia.html:|' >> "$md"

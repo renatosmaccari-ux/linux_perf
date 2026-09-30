@@ -162,6 +162,13 @@ above:
   Unix/Windows collector kits under topology/collectors. Hosts are matched by
   name, by short name and by IP, so one machine stays one node.
 
+  The map imports its own data: the panel has an Inventário section that takes
+  .xls, .xlsx, .csv and .txt, posts them to the CGI and reloads when the
+  rebuild answers, so enriching the graph never means leaving it. The same
+  files can also be managed from the "Topologia: dados" page. Neither the
+  package nor a fresh install carries any inventory: uploads/ and facts/ ship
+  empty.
+
   It rebuilds at the end of every collection cycle. On LPAR2RRD that needs no
   patching: load.sh already runs every bin/user_script*.sh, and
   bin/user_script_topology.sh hooks in there. STOR2RRD has no such hook and
