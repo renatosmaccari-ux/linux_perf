@@ -34,6 +34,33 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lpar2rrd as casador
+import importlib.util as _u
+
+# topo-db.py has a hyphen, so it cannot be imported by name
+_spec = _u.spec_from_file_location(
+    "topo_db", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "topo-db.py"))
+leitor_db = _u.module_from_spec(_spec)
+_spec.loader.exec_module(leitor_db)
+
+
+def bancos(base):
+    """Where the products keep their normalised inventory. base is
+    $INPUTDIR/topology, so the product's own data/ is one level up; a second
+    product installed beside it is two levels up."""
+    raiz = os.path.dirname(os.path.abspath(base))
+    vistos = []
+    candidatos = [(os.path.join(raiz, "data", "data.db"), raiz)]
+    pai = os.path.dirname(raiz)
+    for irmao in ("lpar2rrd", "stor2rrd"):
+        candidatos.append((os.path.join(pai, irmao, "data", "data.db"),
+                           os.path.join(pai, irmao)))
+    for caminho, home in candidatos:
+        real = os.path.realpath(caminho)
+        if os.path.isfile(real) and real not in [v[0] for v in vistos]:
+            rotulo = "stor2rrd" if "stor2rrd" in home.lower() else "lpar2rrd"
+            vistos.append((real, rotulo))
+    return vistos
 
 PORTA_EFEMERA = 32768           # acima disso, origem quase sempre e cliente
 IP_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
@@ -489,6 +516,80 @@ def _endpoint(chave, valor):
     return remoto, porta, sessoes
 
 
+# ====================================== 4. o que os produtos ja colecionaram
+# data/data.db e o inventario normalizado do LPAR2RRD e do STOR2RRD: uma
+# linha por item monitorado, com a hierarquia em item_relations e o agente em
+# agent_relations. Cobre as 21 plataformas de uma vez - VMware, oVirt,
+# Nutanix, XenServer, Hyper-V, Linux, nuvem, storages e switches - sem
+# depender do layout de diretorio de cada coletor.
+
+# estados que os coletores usam para "ligado", cada um a sua maneira
+LIGADO = {"poweredon", "powered_on", "up", "running", "on", "connected",
+          "active", "ok", "available", "normal"}
+DESLIGADO = {"poweredoff", "powered_off", "down", "off", "stopped",
+             "shutoff", "notresponding", "disconnected", "maintenance"}
+
+
+def estado_normalizado(bruto):
+    b = (bruto or "").strip().lower().replace(" ", "")
+    if b in LIGADO:
+        return "ON"
+    if b in DESLIGADO:
+        return "Desativado"
+    return ""
+
+
+def carrega_banco(g, caminho, rotulo):
+    """rotulo identifica a origem nas arestas: lpar2rrd ou stor2rrd."""
+    dados = leitor_db.ler(caminho)
+    if dados["erro"]:
+        sys.stderr.write("topo-build: %s: %s\n"
+                         % (os.path.basename(caminho), dados["erro"]))
+        return 0, 0
+    itens = dados["itens"]
+    if not itens:
+        return 0, 0
+
+    guardados = {}          # item_id -> chave do no no grafo
+    for iid, it in itens.items():
+        if it["classe"] == "artefato":
+            continue        # disco, porta, datastore, pod: nao e dependencia
+        nome = it["label"] or iid
+        n = g.no(nome, nome)
+        if n is None:
+            continue
+        guardados[iid] = norm_host(n["id"])
+
+        # tudo aqui foi efetivamente coletado por um dos produtos
+        n["col"] = True
+        if it["agente"]:
+            n["ag"] = True          # ha agente dentro do host, nao so a visao
+                                    # do hipervisor
+        g.define(n, "plat", leitor_db.PLATAFORMA.get(it["hw_type"], ""))
+        # o rotulo da plataforma ("VMware", "oVirt") descreve um agrupador,
+        # mas seria um SO errado numa maquina: ali so vale a propriedade real
+        so = leitor_db.valor(it, "os")
+        if not so and it["classe"] == "agrupador":
+            so = it["hw_label"]
+        g.define(n, "os", so)
+        g.define(n, "mod", leitor_db.valor(it, "mod"))
+        g.define(n, "chs", leitor_db.valor(it, "chs"))
+        g.define(n, "fn", leitor_db.valor(it, "fn"))
+        g.define(n, "st", estado_normalizado(leitor_db.valor(it, "st")))
+        g.registra_ips(n, re.split(r"[;,\s]+", leitor_db.valor(it, "ips")))
+
+    # a hierarquia que o produto enxerga: datacenter > cluster > esxi > vm.
+    # Relacoes que passam por um artefato sao descartadas junto com ele.
+    arestas = 0
+    for pai, filho in dados["relacoes"]:
+        if pai in guardados and filho in guardados and pai != filho:
+            g.aresta(itens[pai]["label"], itens[filho]["label"], [],
+                     rotulo, rotulo)
+            arestas += 1
+
+    return len(guardados), arestas
+
+
 # ==================================================================== main
 def main():
     if len(sys.argv) != 3:
@@ -501,6 +602,15 @@ def main():
     # por ultimo. Como o primeiro valor nao vazio vence, os coletores mandam
     # em plataforma e SO, e o baseline preenche o que ninguem observou.
     n_con, serial_lparid = carrega_fatos(g, base)
+
+    # o inventario normalizado dos dois produtos, se estiverem instalados lado
+    # a lado ou se este for um deles
+    n_db = a_db = 0
+    for caminho, rotulo in bancos(base):
+        i, a = carrega_banco(g, caminho, rotulo)
+        n_db += i
+        a_db += a
+
     n_bas = carrega_baseline(g, os.path.join(base, "uploads"))
     n_inv = carrega_inventario(g, os.path.join(base, "facts", "inventory.csv"),
                                serial_lparid)
@@ -513,8 +623,9 @@ def main():
         json.dump(dados, f, ensure_ascii=False, separators=(",", ":"))
     os.rename(tmp, saida)
 
-    print("topo-build: %d LPAR do produto, %d hosts coletados, "
-          "%d linhas de baseline" % (n_inv, n_con, n_bas))
+    print("topo-build: %d itens do inventario dos produtos (%d ligacoes), "
+          "%d LPAR do Power, %d hosts coletados, %d linhas de baseline"
+          % (n_db, a_db, n_inv, n_con, n_bas))
     print("topo-build: %d nos, %d ligacoes -> %s"
           % (len(dados["nodes"]), len(dados["links"]), saida))
     return 0

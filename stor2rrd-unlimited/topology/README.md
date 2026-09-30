@@ -1,18 +1,62 @@
 # topology — the dependency map's data pipeline
 
-Installed at `$INPUTDIR/topology`. Three independent sources feed one graph;
+Installed at `$INPUTDIR/topology`. Four independent sources feed one graph;
 whatever is missing is skipped, so a fresh install draws an empty map and says
 so rather than failing.
 
 ```
-data/ (LPAR2RRD/STOR2RRD)  --bin/topo-inventory.py-->  facts/inventory.csv  --+
-collectors/ (unix,windows) ------------------------->  facts/conexoes/*.csv --+--> bin/topo-build.py --> topologia.json
-GUI upload (csv, xlsx) ----------------------------->  uploads/*            --+
+data/data.db (both products) --bin/topo-db.py--------------------------------+
+data/Server-*/ (Power)       --bin/topo-inventory.py--> facts/inventory.csv -+
+collectors/ (unix,windows)   -------------------------> facts/**/*.csv ------+--> bin/topo-build.py --> topologia.json
+GUI upload (csv, xlsx)       -------------------------> uploads/* -----------+
 ```
+
+## What the products already collected
+
+`data/data.db` is the normalised inventory both products keep, and it already
+is a graph. Reading it covers every platform they support at once — VMware,
+oVirt, Nutanix, XenServer, Hyper-V, Linux, OracleVM, Proxmox, Kubernetes, AWS,
+Azure, GCloud, plus STOR2RRD's storages and SAN/LAN switches — and stays
+correct when a collector changes its directory layout.
+
+| table | what it gives the map |
+|---|---|
+| `object_items` / `objects` | one row per monitored item, with `hw_type` and `subsystem` |
+| `item_relations` | parent → child: vCenter › datacenter › cluster › ESXi › VM |
+| `item_properties` | whatever the collector recorded: IP, OS, state, model |
+| `agent_relations` | **which items have an agent inside them** |
+| `hw_types` | the platform catalogue |
+
+Subsystems are classified before anything is drawn:
+
+- **machines** (`VM`, `SERVER`, `ESXI`, `HOST`, `NODE`, `CMCSERVER`…) → nodes
+- **groupers** (`VCENTER`, `CLUSTER`, `DATACENTER`, `DOMAIN`, `STORAGE`, `SAN`…)
+  → nodes, drawn as the parent
+- **artefacts** (`DATASTORE`, `VOLUME`, `DISK`, `*_NIC`, `POD`, `S2D_*`…) →
+  skipped, and relations through them go with them
+
+Without that split, one datastore and every virtual disk would outnumber the
+hosts and bury the dependencies.
+
+**Agent enrichment.** A VM seen only from its hypervisor and the same VM with an
+agent inside are two rows in the database — one under `VMWARE/VM`, one under
+`LINUX/SERVER`. They fuse into a single node (same label, same IP), and
+`agent_relations` sets `ag: true` on it, so the map distinguishes a host that is
+merely visible from one that is actually instrumented.
+
+Both databases are read when the products sit side by side: `$INPUTDIR/data`
+first, then a sibling `lpar2rrd/` or `stor2rrd/` installation. Edges carry
+`lpar2rrd` or `stor2rrd` as their origin. The file is opened **read-only with a
+short timeout** — the collectors write to it while this runs, and a locked or
+half-written database returns an empty result rather than failing the cycle.
+
+The two products differ in two places, both handled: LPAR2RRD keeps items in
+`object_items` and STOR2RRD in `objects`; LPAR2RRD names the platform label
+column `label` and STOR2RRD `hw_label`.
 
 | directory | what it holds |
 |---|---|
-| `bin/` | the extractor, the builder, and the collection item |
+| `bin/` | the database reader, the Power extractor, the matcher, the builder, and the collection item |
 | `cgi/` | the upload page served as `…-cgi/topology.sh` |
 | `collectors/unix`, `collectors/windows` | the inventory kits, run from this host |
 | `facts/` | what the pipeline produced; safe to delete, rebuilt next cycle |
