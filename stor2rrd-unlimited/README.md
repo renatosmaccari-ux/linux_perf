@@ -238,6 +238,53 @@ starts correct. Run `install.sh` / `update.sh` under **umask 022** — the
 installer copies with `cp -R`, which masks the source mode with the caller's
 umask, and a umask of 027 or 077 strips the group bits straight back off.
 
+## Dependency map (`--add-topology`, opt-in)
+
+Installs a static dependency-map page as a GUI entry ("Mapa de dependencias"
+in the tools menu) on either product.
+
+A page dropped into `html/` is not enough on its own. The GUI installer
+(`bin/install-html.sh` on LPAR2RRD, `bin/install-st.sh` on STOR2RRD) copies a
+**fixed list** of files from `html/` into the web directory, and rebuilds
+`tmp/menu.txt` from scratch on every run — so an unregistered page is both
+unreachable and unlinked after the next collection cycle. `--add-topology`
+therefore does four things:
+
+| | |
+|---|---|
+| `html/topologia.html` + `html/topologia.json` | the page and its data |
+| `www/` | same two files, so it works before the next installer run |
+| `html/menu_default.txt` | `T:topo:` entry, used until the installer has run |
+| the installer | one `cp … $WEBDIR/` line and one `menu "$type_tmenu"` line |
+
+Both installer edits are pure insertions marked `# xoruxfork topology`, and the
+menu line mirrors its neighbours — LPAR2RRD appends `>> "$MENU_OUT"`, STOR2RRD
+does not, because its `menu()` writes to `$MENU_OUT` itself. The
+`menu_default.txt` line is derived from each product's own `T:doc:` entry, so
+it picks up the right number of trailing fields (LPAR2RRD has one more).
+
+`dash/build-topology.py` prepares the page from a self-contained export:
+
+- **splits the inline JSON out** to `topologia.json`, fetched at load time, so
+  the map can be refreshed by replacing one file — no rebuild, no reinstall
+- **inlines d3** from `dash/assets/d3.min.js` and drops the CDN tag
+- **drops the Google Fonts links**; the stylesheet already falls back to
+  `system-ui` / `ui-monospace`
+
+The result makes **no outbound request** — verified in a headless browser: the
+page rendered its canvas with zero requests off the local origin. That matters
+on a monitoring host, which generally cannot reach the public internet and has
+no reason to.
+
+The builder refuses to ship a broken payload: it parses the JSON, checks the
+bundle looks like d3, and aborts if any of the three external hosts survives
+the rewrite.
+
+> `dash/build/` is **not** in this repository. The map contains the site's real
+> hostnames, internal addresses, open-port lists, locations and DR pairings;
+> this repo is public. Build it locally and it flows into the package, which is
+> delivered privately.
+
 ## Pre-patched package
 
 `build-package.sh` turns an original XORUX tarball into one with the fork

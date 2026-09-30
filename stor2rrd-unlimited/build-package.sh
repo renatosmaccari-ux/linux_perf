@@ -72,7 +72,10 @@ echo "  layout : ${LAYOUT}.x, payload $(basename "$TREE")/"
 
 # -------------------------------------------------------------- apply the fork
 echo "Applying the unlimited edition module"
-"$SELF_DIR/apply.sh" --harden --fix-vendor-bugs "$TREE" | sed 's/^/  /'
+TOPO=""
+[ -f "$SELF_DIR/dash/build/topologia.html" ] && TOPO="--add-topology"
+"$SELF_DIR/apply.sh" --harden --fix-vendor-bugs $TOPO "$TREE" | sed 's/^/  /'
+[ -n "$TOPO" ] || echo "  note   : dash/build/topologia.html absent, dependency map not included"
 
 # the package IS the fork; per-file backups and the revert manifest belong to
 # in-place installs only
@@ -139,6 +142,17 @@ workaround for a defect in the stock product:
   falls back to ?group=None to enumerate the VIOS and then one call per VIOS,
   keeping whichever answer and logging the ones that do not. It stays inert
   while the collection call succeeds.
+
+Added on top of the version released by XORUX, and unrelated to both of the
+above:
+
+  html/topologia.html and html/topologia.json - a dependency map of the site's
+  own infrastructure, reachable from the tools menu as "Mapa de dependencias".
+  The page is self-contained: d3 is inlined and the webfont links were dropped,
+  so it makes no outbound request. Its data is read from topologia.json beside
+  it, which can be replaced at any time without rebuilding anything. The GUI
+  installer was taught to copy both files into the web directory and to emit
+  the menu entry, because it rewrites tmp/menu.txt from scratch on every run.
 
 File modes in this payload were opened to the group (g+rX, and g+w on
 etc/web_config) because two users share the tree: the product user, which runs

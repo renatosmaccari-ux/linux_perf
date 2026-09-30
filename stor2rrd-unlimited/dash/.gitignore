@@ -1,0 +1,6 @@
+# The built page carries the site's own topology: real hostnames, internal IP
+# addresses, open-port lists, sites, business functions and DR pairings. This
+# repository is public - keep the data out of it and ship it only in the
+# package, which is delivered privately.
+build/
+assets/*.json

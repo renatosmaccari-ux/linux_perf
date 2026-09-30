@@ -21,7 +21,8 @@
 # some of them, so the missing ones are created here.
 #
 # Usage:
-#   ./apply.sh [--harden] [--fix-vendor-bugs] [--fix-permissions] [--force]
+#   ./apply.sh [--harden] [--fix-vendor-bugs] [--fix-permissions]
+#              [--add-topology] [--force]
 #              [<PRODUCT_HOME>]
 #   ./apply.sh --revert                                 [<PRODUCT_HOME>]
 #   ./apply.sh --status                                 [<PRODUCT_HOME>]
@@ -33,6 +34,10 @@
 #                       to do with the free/Enterprise split. Opt-in and kept
 #                       separate so the fork's scope stays legible. See
 #                       vendorfix_file() for what each one is.
+#   --add-topology      install the dependency-map page as a GUI entry. Needs
+#                       dash/build/topologia.{html,json}; build them first with
+#                       dash/build-topology.py. Additive; --revert leaves the
+#                       page in place but restores the files it patched.
 #   --fix-permissions   make the tree group-readable so the web server user
 #                       (which runs the CGI) can read it alongside the product
 #                       user (which runs collection). Additive only; --revert
@@ -55,6 +60,7 @@ EDITION_STRING=forked          # must be exactly 6 characters
 HARDEN=0
 VENDORFIX=0
 FIXPERMS=0
+ADDTOPO=0
 FORCE=0
 MODE=apply
 HOME_ARG=""
@@ -64,6 +70,7 @@ for arg in "$@"; do
     --harden) HARDEN=1 ;;
     --fix-vendor-bugs) VENDORFIX=1 ;;
     --fix-permissions) FIXPERMS=1 ;;
+    --add-topology)    ADDTOPO=1 ;;
     --force)  FORCE=1 ;;
     --revert) MODE=revert ;;
     --status) MODE=status ;;
@@ -119,6 +126,15 @@ HARDEN_FILES="$HOSTCFG $DEVCFG $ALERTPM $MAINJS $LIBJS"
 # files touched by --fix-vendor-bugs, kept apart from the cap removal
 HOSTCFGPL="$S2R/bin/host_cfg.pl"
 RESTAPIPL="$S2R/bin/hmc_rest_api.pl"
+
+# the GUI installer: it rebuilds tmp/menu.txt and copies html/ into the web
+# directory on every run, so a new page has to be registered in both places
+if [ -f "$S2R/bin/install-html.sh" ]; then
+  INSTALLER="$S2R/bin/install-html.sh"       # LPAR2RRD
+else
+  INSTALLER="$S2R/bin/install-st.sh"         # STOR2RRD
+fi
+TOPO_SRC="$SELF_DIR/dash/build"
 VENDORFIX_FILES="$HOSTCFGPL $RESTAPIPL"
 
 MANIFEST="$S2R/.xoruxfork-created"
@@ -254,6 +270,71 @@ vendorfix_hostcfg() {
     return 1
   fi
   echo "  fixed   : ${f#$S2R/} (platform=ibm now reaches the HMC/CMC tabs)"
+}
+
+# -------------------------------------------------------------- topology page
+# A static page is not enough on its own: the installer copies a fixed list of
+# files from html/ into the web directory and regenerates tmp/menu.txt from
+# scratch, so an unregistered page is both unreachable and unlinked after the
+# next collection run.
+add_topology() {
+  for f in topologia.html topologia.json; do
+    [ -f "$TOPO_SRC/$f" ] || {
+      echo "apply.sh: $TOPO_SRC/$f missing - build it first:" >&2
+      echo "          dash/build-topology.py <export.html> dash/assets/d3.min.js dash/build" >&2
+      return 1
+    }
+  done
+
+  cp -p "$TOPO_SRC/topologia.html" "$TOPO_SRC/topologia.json" "$S2R/html/"
+  echo "  installed: html/topologia.html, html/topologia.json"
+  if [ -d "$S2R/www" ]; then
+    cp -p "$TOPO_SRC/topologia.html" "$TOPO_SRC/topologia.json" "$S2R/www/"
+    echo "  installed: www/ as well, so it is reachable before the next installer run"
+  fi
+
+  # menu_default.txt is the fallback menu used until the installer has run.
+  # The two products use a different number of trailing fields, so derive the
+  # line from the product's own Documentation entry instead of hardcoding it.
+  md="$S2R/html/menu_default.txt"
+  if [ -f "$md" ] && ! grep -q '^T:topo:' "$md"; then
+    [ -f "$md.xoruxfork-orig" ] || cp -p "$md" "$md.xoruxfork-orig"
+    doc=$(grep '^T:doc:' "$md" | head -1)
+    if [ -n "$doc" ]; then
+      printf '%s\n' "$doc" \
+        | sed 's|^T:doc:[^:]*:[^:]*:|T:topo:Mapa de dependencias:topologia.html:|' >> "$md"
+      echo "  menu     : html/menu_default.txt"
+    fi
+  fi
+
+  [ -f "$INSTALLER" ] || { echo "apply.sh: no GUI installer found, menu not registered" >&2; return 1; }
+  if grep -q 'xoruxfork topology' "$INSTALLER"; then
+    echo "  menu     : ${INSTALLER#$S2R/} already registered"
+    return 0
+  fi
+  [ -f "$INSTALLER.xoruxfork-orig" ] || cp -p "$INSTALLER" "$INSTALLER.xoruxfork-orig"
+
+  TOPO_SRC="$TOPO_SRC" perl -0777 -i -pe '
+    my $copied = 0;
+    # 1. have the installer copy the page into the web directory
+    $copied = 1 if s{(\n\s*cp [^\n]*not.implemented[^\n]*WEBDIR[^\n]*\n)}
+                    {$1 . qq(cp "\$INPUTDIR/html/topologia.html" "\$INPUTDIR/html/topologia.json" "\$WEBDIR/"   # xoruxfork topology\n)}e;
+    # 2. register it in the tools menu, after an unconditional sibling entry.
+    #    Copy the captures out before matching against them: an inner =~ resets
+    #    $1/$2 and silently ate the anchor line.
+    my $linked = 0;
+    $linked = 1 if s{(\n([ \t]*)menu "\$type_tmenu" "(?:logs|errcgi)"([^\n]*)\n)}{
+                      my ( $all, $indent, $rest ) = ( $1, $2, $3 );
+                      my $redir = $rest =~ /MENU_OUT/ ? qq( >> "\$MENU_OUT") : "";
+                      $all . $indent
+                        . qq(menu "\$type_tmenu" "topo" "Mapa de dependencias" "topologia.html")
+                        . $redir . qq(   # xoruxfork topology\n);
+                    }e;
+    die "apply.sh: could not register the page (copy=$copied menu=$linked)\n"
+      unless $copied && $linked;
+  ' "$INSTALLER" || { mv "$INSTALLER.xoruxfork-orig" "$INSTALLER"; return 1; }
+
+  echo "  menu     : ${INSTALLER#$S2R/} (copy to WEBDIR + tools menu entry)"
 }
 
 # ------------------------------------------------------------ permissions
@@ -433,6 +514,11 @@ fi
 if [ "$VENDORFIX" -eq 1 ]; then
   echo "Applying vendor bug workarounds"
   for f in $VENDORFIX_FILES; do vendorfix_file "$f"; done
+fi
+
+if [ "$ADDTOPO" -eq 1 ]; then
+  echo "Installing the dependency-map page"
+  add_topology
 fi
 
 if [ "$FIXPERMS" -eq 1 ]; then
