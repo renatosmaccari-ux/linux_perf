@@ -146,13 +146,32 @@ workaround for a defect in the stock product:
 Added on top of the version released by XORUX, and unrelated to both of the
 above:
 
-  html/topologia.html and html/topologia.json - a dependency map of the site's
-  own infrastructure, reachable from the tools menu as "Mapa de dependencias".
-  The page is self-contained: d3 is inlined and the webfont links were dropped,
-  so it makes no outbound request. Its data is read from topologia.json beside
-  it, which can be replaced at any time without rebuilding anything. The GUI
-  installer was taught to copy both files into the web directory and to emit
-  the menu entry, because it rewrites tmp/menu.txt from scratch on every run.
+  A dependency map, reachable from the tools menu as "Mapa de dependencias",
+  and the pipeline that fills it. The page is self-contained: d3 is inlined and
+  the webfont links were dropped, so it makes no outbound request. It ships
+  with an EMPTY map and explains on screen where its data comes from - this
+  build carries no inventory of anyone's environment.
+
+  topology/ holds the pipeline. Three sources are merged into topologia.json:
+  the inventory this product already collects (frames, LPARs, VIOS, via
+  data/Server-*/CONFIG.json), spreadsheets or CSV files uploaded through the
+  second menu entry "Topologia: dados", and TCP endpoints observed by the
+  Unix/Windows collector kits under topology/collectors. Hosts are matched by
+  name, by short name and by IP, so one machine stays one node.
+
+  It rebuilds at the end of every collection cycle. On LPAR2RRD that needs no
+  patching: load.sh already runs every bin/user_script*.sh, and
+  bin/user_script_topology.sh hooks in there. STOR2RRD has no such hook and
+  gets one guarded call at the end of its load.sh. A cycle only publishes a
+  map that parses, so a failed run leaves the previous one in place.
+
+  The GUI installer was taught to copy the page into the web directory and to
+  emit both menu entries, because it rewrites tmp/menu.txt from scratch on
+  every run; an existing topologia.json is never overwritten by an upgrade.
+
+  Uploads are treated as data: the filename is reduced to a basename from a
+  strict character set, only .csv/.txt/.xlsx are accepted, the size is capped,
+  and the rebuild runs without a shell.
 
 File modes in this payload were opened to the group (g+rX, and g+w on
 etc/web_config) because two users share the tree: the product user, which runs

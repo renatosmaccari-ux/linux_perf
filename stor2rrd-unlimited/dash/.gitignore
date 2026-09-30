@@ -4,3 +4,5 @@
 # package, which is delivered privately.
 build/
 assets/*.json
+__pycache__/
+*.pyc

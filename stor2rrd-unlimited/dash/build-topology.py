@@ -23,6 +23,21 @@ FONT_LINKS = re.compile(
     r'[ \t]*<link rel="preconnect" href="https://fonts\.(?:googleapis|gstatic)\.com"[^>]*>\n'
     r'|[ \t]*<link href="https://fonts\.googleapis\.com[^"]*" rel="stylesheet">\n')
 
+VAZIO = (
+  '<div style="position:fixed;inset:0;display:grid;place-items:center;padding:24px;'
+  'pointer-events:none"><div style="max-width:520px;background:var(--painel,#1C232C);'
+  'border:1px solid var(--linha,#2B3542);border-radius:10px;padding:20px 22px;'
+  'pointer-events:auto;font:14px/1.6 system-ui,sans-serif">'
+  '<div style="font-weight:600;margin-bottom:8px">Nenhum dado ainda</div>'
+  '<div style="color:var(--suave,#8A97A6)">O mapa e montado a cada ciclo de coleta a partir de tres fontes:'
+  '<ul style="margin:10px 0 0;padding-left:20px">'
+  '<li>o inventario que o LPAR2RRD/STOR2RRD ja coleta (frames, LPARs, VIOS);</li>'
+  '<li>a planilha ou CSV de baseline, enviados em <b>Topologia: dados</b>;</li>'
+  '<li>as conexoes TCP observadas pelos coletores Unix e Windows.</li></ul>'
+  '<p style="margin:12px 0 0">Comece enviando a planilha de inventario na pagina '
+  '<b>Topologia: dados</b>, no menu de ferramentas.</p></div></div></div>'
+)
+
 BOOTSTRAP = '''<script>
 (async function(){
 "use strict";
@@ -31,7 +46,11 @@ const D = await (async function(){
   try {
     const r = await fetch("topologia.json", { cache: "no-cache" });
     if (!r.ok) throw new Error("HTTP " + r.status);
-    return await r.json();
+    const d = await r.json();
+    if (!d || !d.nodes || d.nodes.length === 0) {
+      alvo.insertAdjacentHTML("beforeend", __VAZIO__);
+    }
+    return d;
   } catch (e) {
     alvo.insertAdjacentHTML("beforeend",
       '<div style="position:fixed;inset:0;display:grid;place-items:center;'
@@ -66,7 +85,9 @@ def main():
 
     if OLD_HEAD not in html:
         sys.exit("build-topology.py: the expected bootstrap block was not found")
-    html = html.replace(OLD_HEAD, BOOTSTRAP, 1)
+    import json as _json
+    bootstrap = BOOTSTRAP.replace("__VAZIO__", _json.dumps(VAZIO))
+    html = html.replace(OLD_HEAD, bootstrap, 1)
 
     # an async IIFE returns a promise; the fetch failure is already reported
     # on the page, so keep it from surfacing again as an unhandled rejection

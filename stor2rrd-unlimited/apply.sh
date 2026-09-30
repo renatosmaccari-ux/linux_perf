@@ -135,6 +135,12 @@ else
   INSTALLER="$S2R/bin/install-st.sh"         # STOR2RRD
 fi
 TOPO_SRC="$SELF_DIR/dash/build"
+TOPO_KIT="$SELF_DIR/topology"
+if [ -d "$S2R/lpar2rrd-cgi" ]; then
+  CGIDIR="$S2R/lpar2rrd-cgi"
+else
+  CGIDIR="$S2R/stor2rrd-cgi"
+fi
 VENDORFIX_FILES="$HOSTCFGPL $RESTAPIPL"
 
 MANIFEST="$S2R/.xoruxfork-created"
@@ -286,23 +292,73 @@ add_topology() {
     }
   done
 
-  cp -p "$TOPO_SRC/topologia.html" "$TOPO_SRC/topologia.json" "$S2R/html/"
+  # ---------------------------------------------------------------- the page
+  cp -p "$TOPO_SRC/topologia.html" "$S2R/html/"
+  # never overwrite a map the site has already built
+  [ -f "$S2R/html/topologia.json" ] || cp -p "$TOPO_SRC/topologia.json" "$S2R/html/"
   echo "  installed: html/topologia.html, html/topologia.json"
   if [ -d "$S2R/www" ]; then
-    cp -p "$TOPO_SRC/topologia.html" "$TOPO_SRC/topologia.json" "$S2R/www/"
-    echo "  installed: www/ as well, so it is reachable before the next installer run"
+    cp -p "$TOPO_SRC/topologia.html" "$S2R/www/"
+    [ -f "$S2R/www/topologia.json" ] || cp -p "$TOPO_SRC/topologia.json" "$S2R/www/"
   fi
 
-  # menu_default.txt is the fallback menu used until the installer has run.
-  # The two products use a different number of trailing fields, so derive the
-  # line from the product's own Documentation entry instead of hardcoding it.
+  # ------------------------------------------------- the pipeline that feeds it
+  if [ -d "$TOPO_KIT" ]; then
+    mkdir -p "$S2R/topology/facts/conexoes" "$S2R/topology/uploads"
+    cp -Rp "$TOPO_KIT/bin" "$TOPO_KIT/cgi" "$S2R/topology/" 2>/dev/null
+    [ -d "$TOPO_KIT/collectors" ] && cp -Rp "$TOPO_KIT/collectors" "$S2R/topology/"
+    chmod +x "$S2R/topology/bin/"*.sh "$S2R/topology/bin/"*.py "$S2R/topology/cgi/"*.sh 2>/dev/null
+    [ -f "$S2R/topology/topologia.json" ] || cp -p "$TOPO_SRC/topologia.json" "$S2R/topology/"
+    echo "  installed: topology/ (builder, collectors, uploads)"
+
+    # the CGI that takes spreadsheets
+    if [ -d "$CGIDIR" ]; then
+      cp -p "$TOPO_KIT/cgi/topology.sh" "$CGIDIR/topology.sh"
+      chmod +x "$CGIDIR/topology.sh"
+      echo "  installed: ${CGIDIR#$S2R/}/topology.sh"
+    fi
+
+    # LPAR2RRD runs every bin/user_script*.sh at the end of load.sh - an
+    # official hook, so nothing needs patching there.
+    if [ -f "$S2R/load.sh" ] && grep -q 'user_script\*\.sh' "$S2R/load.sh"; then
+      cat > "$S2R/bin/user_script_topology.sh" <<'SHIM'
+#!/bin/sh
+# Picked up by load.sh (bin/user_script*.sh); the work is in topology/bin.
+exec "${INPUTDIR:-$(cd "$(dirname "$0")/.." && pwd)}/topology/bin/user_script_topology.sh"
+SHIM
+      chmod +x "$S2R/bin/user_script_topology.sh"
+      echo "  collect  : bin/user_script_topology.sh (load.sh user-script hook)"
+    elif [ -f "$S2R/load.sh" ]; then
+      # STOR2RRD has no such hook: insert one call before load.sh ends
+      if grep -q 'xoruxfork topology' "$S2R/load.sh"; then
+        echo "  collect  : load.sh already calls the builder"
+      else
+        [ -f "$S2R/load.sh.xoruxfork-orig" ] || cp -p "$S2R/load.sh" "$S2R/load.sh.xoruxfork-orig"
+        perl -0777 -i -pe '
+          s{(\n)(date\nexit 0\n?)\z}
+           {$1 . qq(# xoruxfork topology\n)
+              . qq([ -f "\$INPUTDIR/topology/bin/user_script_topology.sh" ] &&\n)
+              . qq(  sh "\$INPUTDIR/topology/bin/user_script_topology.sh"\n\n) . $2}e
+            or die "apply.sh: could not find the tail of load.sh\n";
+        ' "$S2R/load.sh" || { mv "$S2R/load.sh.xoruxfork-orig" "$S2R/load.sh"; return 1; }
+        echo "  collect  : load.sh (builder called at the end of each cycle)"
+      fi
+    fi
+  fi
+
+  # ------------------------------------------------------------------- menus
   md="$S2R/html/menu_default.txt"
-  if [ -f "$md" ] && ! grep -q '^T:topo:' "$md"; then
+  if [ -f "$md" ]; then
     [ -f "$md.xoruxfork-orig" ] || cp -p "$md" "$md.xoruxfork-orig"
     doc=$(grep '^T:doc:' "$md" | head -1)
+    cgiweb=$(basename "$CGIDIR")
     if [ -n "$doc" ]; then
-      printf '%s\n' "$doc" \
+      grep -q '^T:topo:' "$md" || printf '%s\n' "$doc" \
         | sed 's|^T:doc:[^:]*:[^:]*:|T:topo:Mapa de dependencias:topologia.html:|' >> "$md"
+      # ":" is the field separator; genjson.pl decodes ===double-col=== back
+      # to a colon (sub collons). A raw colon here would split the label.
+      grep -q '^T:topodata:' "$md" || printf '%s\n' "$doc" \
+        | sed "s|^T:doc:[^:]*:[^:]*:|T:topodata:Topologia===double-col=== dados:/$cgiweb/topology.sh:|" >> "$md"
       echo "  menu     : html/menu_default.txt"
     fi
   fi
@@ -314,27 +370,30 @@ add_topology() {
   fi
   [ -f "$INSTALLER.xoruxfork-orig" ] || cp -p "$INSTALLER" "$INSTALLER.xoruxfork-orig"
 
-  TOPO_SRC="$TOPO_SRC" perl -0777 -i -pe '
-    my $copied = 0;
+  CGIWEB=$(basename "$CGIDIR") perl -0777 -i -pe '
+    my $cgi = $ENV{CGIWEB};
     # 1. have the installer copy the page into the web directory
+    my $copied = 0;
     $copied = 1 if s{(\n\s*cp [^\n]*not.implemented[^\n]*WEBDIR[^\n]*\n)}
-                    {$1 . qq(cp "\$INPUTDIR/html/topologia.html" "\$INPUTDIR/html/topologia.json" "\$WEBDIR/"   # xoruxfork topology\n)}e;
-    # 2. register it in the tools menu, after an unconditional sibling entry.
-    #    Copy the captures out before matching against them: an inner =~ resets
-    #    $1/$2 and silently ate the anchor line.
+                    {$1 . qq(cp "\$INPUTDIR/html/topologia.html" "\$WEBDIR/"   # xoruxfork topology\n)
+                        . qq([ -f "\$WEBDIR/topologia.json" ] || cp "\$INPUTDIR/html/topologia.json" "\$WEBDIR/"   # xoruxfork topology\n)}e;
+    # 2. register both pages in the tools menu
     my $linked = 0;
     $linked = 1 if s{(\n([ \t]*)menu "\$type_tmenu" "(?:logs|errcgi)"([^\n]*)\n)}{
                       my ( $all, $indent, $rest ) = ( $1, $2, $3 );
                       my $redir = $rest =~ /MENU_OUT/ ? qq( >> "\$MENU_OUT") : "";
                       $all . $indent
                         . qq(menu "\$type_tmenu" "topo" "Mapa de dependencias" "topologia.html")
+                        . $redir . qq(   # xoruxfork topology\n)
+                        . $indent
+                        . qq(menu "\$type_tmenu" "topodata" "Topologia: dados" "/$cgi/topology.sh")
                         . $redir . qq(   # xoruxfork topology\n);
                     }e;
-    die "apply.sh: could not register the page (copy=$copied menu=$linked)\n"
+    die "apply.sh: could not register the pages (copy=$copied menu=$linked)\n"
       unless $copied && $linked;
   ' "$INSTALLER" || { mv "$INSTALLER.xoruxfork-orig" "$INSTALLER"; return 1; }
 
-  echo "  menu     : ${INSTALLER#$S2R/} (copy to WEBDIR + tools menu entry)"
+  echo "  menu     : ${INSTALLER#$S2R/} (copy to WEBDIR + two tools-menu entries)"
 }
 
 # ------------------------------------------------------------ permissions
