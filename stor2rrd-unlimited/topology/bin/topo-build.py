@@ -32,6 +32,9 @@ import re
 import sys
 from collections import defaultdict
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lpar2rrd as casador
+
 PORTA_EFEMERA = 32768           # acima disso, origem quase sempre e cliente
 IP_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 
@@ -201,43 +204,84 @@ class Grafo(object):
 
 
 # ===================================================== 1. inventario do produto
-def carrega_inventario(g, caminho):
-    """facts/inventory.csv, escrito por topo-inventory.py."""
+# Delegado a lpar2rrd.py, que faz o que este arquivo nao fazia: funde as ate
+# duas linhas por (frame, LPAR) - configuracao do HMC e dados do agente -,
+# resolve a mesma LPAR aparecendo em varios frames por historico de LPM
+# (vence Running, depois o registro mais completo), e casa cada LPAR com um no
+# ja existente pelo criterio mais forte disponivel:
+#
+#   serial do frame + lpar_id  (4)   o que a propria coleta AIX informou
+#   hostname do agente         (3)
+#   IP                         (2)
+#   lpar_name normalizado      (1)   sem sufixo de frame e sem _new/_old
+#
+# Um no recebe no maximo uma LPAR; as perdedoras ficam com descartado_por.
+# Por isso o inventario e a ULTIMA fonte a rodar: precisa dos nos que os
+# coletores e o baseline ja criaram.
+def carrega_inventario(g, caminho, serial_lparid):
     if not os.path.isfile(caminho):
         return 0
-    lidos = 0
-    with open(caminho, encoding="utf-8", errors="replace") as f:
-        for r in csv.DictReader(f):
-            nome = (r.get("hostname") or r.get("lpar_name") or "").strip()
-            if not nome:
-                continue
-            n = g.no(nome, nome)
-            lidos += 1
-            n["col"] = True
-            tipo = (r.get("entity_type") or "lpar").strip()
-            if tipo == "frame":
-                g.define(n, "plat", "frame")
-                g.define(n, "os", "IBM Power")
-            elif re.search(r"vios|vio\d", nome, re.I):
-                g.define(n, "plat", "vios")
-                g.define(n, "os", "VIOS")
-            tipo_modelo = "-".join(x for x in (r.get("machine_type"),
-                                                r.get("model")) if x)
-            g.define(n, "mod", tipo_modelo)
-            g.define(n, "chs", r.get("serial"))
-            g.define(n, "st", "ON" if r.get("lpar_state") == "Running" else "")
-            g.registra_ips(n, re.split(r"[;, ]+", r.get("ip") or ""))
 
-            # frame -> LPAR: uma relacao que so o produto conhece
-            frame = (r.get("physical_server") or "").strip()
-            if frame and norm_host(frame) != norm_host(nome):
-                fn_ = g.no(frame, frame)
-                fn_["col"] = True
-                g.define(fn_, "plat", "frame")
-                g.define(fn_, "os", "IBM Power")
-                g.define(fn_, "mod", tipo_modelo)
-                g.aresta(frame, nome, [], "lpar2rrd", "lpar2rrd")
-    return lidos
+    try:
+        lpars = casador.carregar(caminho)
+        frames = casador.carregar_frames(caminho)
+    except Exception as e:
+        sys.stderr.write("topo-build: inventory.csv ilegivel (%s)\n" % e)
+        return 0
+
+    # carregar_frames indexa por serial e nao devolve o nome do frame, entao
+    # nao cria nos aqui - isso duplicaria o frame com o serial por rotulo. Vira
+    # uma consulta: o tipo-modelo por serial, aplicado depois que o laco das
+    # LPARs criou o no do frame com o nome certo.
+    def modelo_do_serial(sn):
+        f = frames.get(sn or "", {})
+        return "-".join(x for x in (f.get("machine_type"), f.get("model")) if x)
+
+    # os indices que casar() consulta, montados sobre o grafo atual
+    nos_ids = {}
+    for chave, n in g.nos.items():
+        nos_ids[chave] = chave
+        for c in casador.candidatos_nome(n["id"]):
+            nos_ids.setdefault(c, chave)
+    ip_para_no = dict(g.por_ip)
+
+    casador.casar(lpars, nos_ids, ip_para_no, serial_lparid)
+
+    for r in lpars:
+        alvo = r.get("no") or r["lpar_name"]
+        n = g.no(alvo, alvo if not r.get("no") else None)
+        if n is None:
+            continue
+        n["col"] = True
+        if r.get("vios"):
+            g.define(n, "plat", "vios")
+            g.define(n, "os", "VIOS")
+        g.define(n, "mod", r.get("modelo_frame") or modelo_do_serial(r.get("serial"))
+                           or r.get("machine_type"))
+        g.define(n, "chs", r.get("serial"))
+        g.define(n, "st", "ON" if r.get("lpar_state") == "Running" else "")
+        g.registra_ips(n, re.split(r"[;, ]+", r.get("ip") or ""))
+
+        # frame -> LPAR: a relacao que so o produto conhece
+        frame = (r.get("physical_server") or r.get("server_id") or "").strip()
+        if frame and norm_host(frame) != norm_host(n["id"]):
+            fn_ = g.no(frame, frame)
+            fn_["col"] = True
+            g.define(fn_, "plat", "frame")
+            g.define(fn_, "os", "IBM Power")
+            g.define(fn_, "mod", r.get("modelo_frame") or modelo_do_serial(r.get("serial")))
+            g.define(fn_, "chs", r.get("serial"))
+            g.aresta(frame, n["id"], [], "lpar2rrd", "lpar2rrd")
+
+    # quantas casaram, e por qual criterio - vai para o log da coleta
+    porforca = defaultdict(int)
+    for r in lpars:
+        porforca[r.get("casamento") or "sem casamento"] += 1
+    if porforca:
+        sys.stdout.write("topo-build: casamento de LPARs: %s\n" % ", ".join(
+            "%s=%d" % (k, porforca[k]) for k in sorted(porforca)))
+
+    return len(lpars)
 
 
 # ============================================================ 2. baseline
@@ -320,73 +364,114 @@ def carrega_baseline(g, diretorio):
     return lidos
 
 
-# ====================================================== 3. fatos de conexao
-# O kit de coleta emite CSV de 4 colunas: categoria,escopo,chave,valor.
-# Interessam as categorias "conexao" e "meta"; o resto (storage, seguranca)
-# descreve o host e nao a topologia.
-def carrega_conexoes(g, diretorio):
-    arquivos = sorted(glob.glob(os.path.join(diretorio, "*.csv")))
-    hosts = 0
+# ====================================================== 3. fatos dos coletores
+# O kit emite CSV de 4 colunas: categoria,escopo,chave,valor. Tudo em
+# facts/ e lido, nao so as conexoes: 01_sistema traz o serial do frame e o
+# lpar_id, que juntos sao o casamento mais forte com o inventario do produto.
+def carrega_fatos(g, base):
+    raiz = os.path.join(base, "facts")
+    arquivos = sorted(glob.glob(os.path.join(raiz, "*.csv"))
+                      + glob.glob(os.path.join(raiz, "*", "*.csv")))
+    por_host = defaultdict(list)
     for caminho in arquivos:
-        # o nome do arquivo identifica o host: <host>_conexoes.csv
-        host = re.sub(r"[_-]?(conexoes|conexao|06.*)?\.csv$", "",
-                      os.path.basename(caminho), flags=re.I)
-        if not host:
+        if os.path.basename(caminho) == "inventory.csv":
             continue
+        por_host[nome_do_host(caminho)].append(caminho)
+    por_host.pop("", None)
+
+    serial_lparid = {}          # (serial, lpar_id) -> id normalizado, para casar()
+    for host, caminhos in sorted(por_host.items()):
         n = g.no(host, host)
         n["col"] = True
-        hosts += 1
         portas_listen = []
-        try:
-            with open(caminho, encoding="utf-8", errors="replace") as f:
-                for campos in csv.reader(f):
+        serial = lpar_id = ""
+
+        for caminho in caminhos:
+            try:
+                fh = open(caminho, encoding="utf-8", errors="replace")
+            except IOError as e:
+                sys.stderr.write("topo-build: %s ilegivel (%s)\n"
+                                 % (os.path.basename(caminho), e))
+                continue
+            with fh:
+                for campos in csv.reader(fh):
                     if len(campos) < 4:
                         continue
-                    categoria, escopo, chave, valor = (
-                        campos[0].strip(), campos[1].strip(),
-                        campos[2].strip(), campos[3].strip())
+                    # lib.sh cita valores com virgula, mas um CSV montado a
+                    # mao nao: junte o resto em vez de truncar no 4o campo
+                    cat, esc, chave = (c.strip() for c in campos[:3])
+                    valor = ",".join(campos[3:]).strip()
+                    if not valor:
+                        continue
 
-                    if categoria == "meta" and escopo == "host":
+                    if cat == "meta" and esc == "host":
                         if chave == "plataforma":
                             g.define(n, "plat", valor)
                         elif chave == "distro":
                             g.define(n, "os", valor)
                         elif chave == "zona_tipo":
                             g.define(n, "esc", valor)
-                        continue
 
-                    if categoria != "conexao":
-                        continue
+                    elif cat == "frame":
+                        if chave == "frame_serial":
+                            serial = valor
+                            g.define(n, "chs", valor)
+                        elif chave in ("tipo_modelo", "tipo_modelo_curto"):
+                            g.define(n, "mod", valor)
 
-                    if escopo == "ip_local":
-                        g.registra_ips(n, [valor])
-                    elif escopo in ("listen", "porta_listen"):
-                        porta = re.sub(r"\D", "", chave or valor)
-                        if porta and porta not in portas_listen:
-                            portas_listen.append(porta)
-                    elif escopo in ("entrada", "cliente"):
-                        # alguem se conectou a uma porta nossa: ele -> nos
-                        remoto, porta, sessoes = _endpoint(chave, valor)
-                        if remoto:
-                            g.aresta(remoto, host, [porta] if porta else [],
-                                     "servidor",
-                                     "listen" if porta and int(porta) < PORTA_EFEMERA
-                                     else "efemera", sessoes)
-                    elif escopo in ("saida", "servidor"):
-                        # nos conectamos a uma porta de alguem: nos -> ele
-                        remoto, porta, sessoes = _endpoint(chave, valor)
-                        if remoto:
-                            g.aresta(host, remoto, [porta] if porta else [],
-                                     "cliente",
-                                     "porta" if porta and int(porta) < PORTA_EFEMERA
-                                     else "efemera", sessoes)
-        except Exception as e:
-            sys.stderr.write("topo-build: %s ilegivel (%s)\n"
-                             % (os.path.basename(caminho), e))
-            continue
+                    elif cat == "lpar":
+                        if chave == "lpar_id":
+                            lpar_id = valor
+                        elif chave == "tipo" and esc == "zona":
+                            g.define(n, "esc", valor)
+
+                    elif cat == "conexao":
+                        if esc == "ip_local":
+                            g.registra_ips(n, [valor])
+                        elif esc in ("listen", "porta_listen"):
+                            porta = re.sub(r"\D", "", chave or valor)
+                            if porta and porta not in portas_listen:
+                                portas_listen.append(porta)
+                        elif esc in ("entrada", "cliente"):
+                            # alguem se conectou a uma porta nossa: ele -> nos
+                            remoto, porta, sessoes = _endpoint(chave, valor)
+                            if remoto:
+                                g.aresta(remoto, host, [porta] if porta else [],
+                                         "servidor", _confianca(porta, True), sessoes)
+                        elif esc in ("saida", "servidor"):
+                            # nos conectamos a uma porta de alguem: nos -> ele
+                            remoto, porta, sessoes = _endpoint(chave, valor)
+                            if remoto:
+                                g.aresta(host, remoto, [porta] if porta else [],
+                                         "cliente", _confianca(porta, False), sessoes)
+
         if portas_listen:
             n["lst"] = " ".join(sorted(portas_listen, key=lambda p: int(p)))
-    return hosts
+        if serial and lpar_id:
+            serial_lparid[(serial, lpar_id)] = norm_host(host)
+
+    return len(por_host), serial_lparid
+
+
+def nome_do_host(caminho):
+    """<host>_conexoes.csv, <host>_01_sistema.csv, <host>.csv -> <host>"""
+    nome = os.path.basename(caminho)
+    nome = re.sub(r"\.csv$", "", nome, flags=re.I)
+    # Duas passagens, e nao um regex so. Um grupo de digitos opcional no meio
+    # do padrao come o final do proprio hostname: srv047_conexoes virava
+    # "srv0" e web-01_storage virava "web", partindo um host em varios nos.
+    nome = re.sub(r"[_-](conexoes|conexao|sistema|rede|storage|seguranca|"
+                  r"monitoracao|hyperv)$", "", nome, flags=re.I)
+    nome = re.sub(r"_\d{2}$", "", nome)   # o indice NN do kit, sempre com "_"
+    return nome.strip("_-")
+
+
+def _confianca(porta, entrada):
+    if not porta:
+        return "efemera"
+    if int(porta) >= PORTA_EFEMERA:
+        return "efemera"
+    return "listen" if entrada else "porta"
 
 
 def _endpoint(chave, valor):
@@ -411,9 +496,14 @@ def main():
     base, saida = sys.argv[1], sys.argv[2]
 
     g = Grafo()
-    n_inv = carrega_inventario(g, os.path.join(base, "facts", "inventory.csv"))
-    n_con = carrega_conexoes(g, os.path.join(base, "facts", "conexoes"))
+
+    # A ordem importa: o inventario casa contra nos que ja existem, entao vem
+    # por ultimo. Como o primeiro valor nao vazio vence, os coletores mandam
+    # em plataforma e SO, e o baseline preenche o que ninguem observou.
+    n_con, serial_lparid = carrega_fatos(g, base)
     n_bas = carrega_baseline(g, os.path.join(base, "uploads"))
+    n_inv = carrega_inventario(g, os.path.join(base, "facts", "inventory.csv"),
+                               serial_lparid)
 
     dados = g.json()
 
@@ -423,7 +513,7 @@ def main():
         json.dump(dados, f, ensure_ascii=False, separators=(",", ":"))
     os.rename(tmp, saida)
 
-    print("topo-build: %d LPAR/frame do produto, %d hosts coletados, "
+    print("topo-build: %d LPAR do produto, %d hosts coletados, "
           "%d linhas de baseline" % (n_inv, n_con, n_bas))
     print("topo-build: %d nos, %d ligacoes -> %s"
           % (len(dados["nodes"]), len(dados["links"]), saida))

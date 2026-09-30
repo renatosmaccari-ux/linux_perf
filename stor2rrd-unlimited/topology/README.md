@@ -50,8 +50,30 @@ categories from `facts/conexoes/*.csv`, named `<host>_conexoes.csv`.
 
 Hosts are matched case-insensitively, without the domain, and by IP — so the
 same machine seen as `srv01`, `SRV01.corp` and `10.0.0.5` stays one node. The
-first non-empty value wins, and the sources run inventory → connections →
-baseline, so collected fact beats hand-maintained sheet.
+first non-empty value wins, and the sources run **collectors → baseline →
+inventory**, so an observed fact beats a hand-maintained sheet. The inventory
+runs last because it matches against nodes the other two already created.
+
+`lpar2rrd.py` does that matching. It fuses the up-to-two rows per
+(frame, LPAR) — HMC config and agent data — resolves the same LPAR appearing on
+several frames from LPM history (Running wins, then the most complete record),
+and binds each LPAR to a node by the strongest criterion available:
+
+| strength | criterion |
+|---|---|
+| 4 | frame serial + `lpar_id`, as the AIX collection itself reported them |
+| 3 | hostname from the agent |
+| 2 | IP |
+| 1 | `lpar_name` without the frame suffix (`_E0BX`) or `_new`/`_old` |
+
+A node takes at most one LPAR: the strongest match wins, ties go to Running,
+and the losers are left unbound with `descartado_por` rather than silently
+overwriting a live host. Each run logs the tally, e.g.
+`casamento de LPARs: serial+lpar_id=1, hostname=1, lpar_name=1`.
+
+Frame serial and `lpar_id` come from the collectors' `01_sistema`
+(`frame,serial,frame_serial` and `lpar,id,lpar_id`), which is why every file
+under `facts/` is read, not only the connection ones.
 
 Every edge records how it was learnt:
 

@@ -81,6 +81,9 @@ TOPO=""
 # in-place installs only
 find "$TREE" -name '*.xoruxfork-orig' -delete
 rm -f "$TREE/.xoruxfork-created"
+# build residue from running the python locally
+find "$TREE" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null
+find "$TREE" -name '*.pyc' -delete 2>/dev/null
 
 # The product user runs collection from cron and the web server user runs the
 # CGI, so both need to read the tree. Ship it group-readable; the installer's

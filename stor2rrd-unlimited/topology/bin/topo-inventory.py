@@ -598,6 +598,7 @@ def extract_server():
             row = {}
 
             row["entity_type"] = "lpar"
+            row["platform"] = "power"
             row["physical_server"] = physical["name"]
             row["machine_type"] = physical["machine_type"]
             row["model"] = physical["model"]
@@ -736,6 +737,7 @@ def extract_server():
         if physical["name"]:
             rows.append(normalize_row({
                 "entity_type": "frame",
+                "platform": "power",
                 "physical_server": physical["name"],
                 "machine_type": physical["machine_type"],
                 "model": physical["model"],
@@ -772,6 +774,7 @@ def extract_server():
             row = {}
 
             row["entity_type"] = "lpar"
+            row["platform"] = "power"
             row["physical_server"] = physical["name"]
             row["machine_type"] = physical["machine_type"]
             row["model"] = physical["model"]
@@ -904,6 +907,7 @@ def extract_server():
 
 FIELDS = [
     "entity_type",
+    "platform",
     "physical_server",
     "machine_type",
     "model",
