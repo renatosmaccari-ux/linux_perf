@@ -545,15 +545,34 @@ if [ -f "$EDITION" ] && ! is_ours "$EDITION" && [ ! -f "$EDITION.xoruxfork-orig"
   echo "  backed up: ${EDITION#$S2R/}.xoruxfork-orig"
 fi
 
-# derive the fork's module from the stock one: change only premium()'s value
+# Derive the fork's module from the stock one. The module holds more than one
+# edition switch:
+#
+#   premium()        "free" (4 chars); every cap tests length() == 6
+#   get_lpar_num()   0; custom.pl gates 25 item counts on !get_lpar_num()
+#
+#   get_rperf_all(), rperf_check(), lpm(), lpm_find_files() take arguments and
+#   return data, not booleans - they are Enterprise implementations that are
+#   absent from the GPL tree, not caps. Forcing a value there would feed
+#   callers a number where they expect rPerf cores or a list of RRD files, so
+#   they are carried over untouched.
 SRC="$STOCK"
 [ -f "$EDITION.xoruxfork-orig" ] && SRC="$EDITION.xoruxfork-orig"
 perl -0777 -pe '
   my $s = "'"$EDITION_STRING"'";
   s/(sub\s+premium\s*\{\s*return\s+)"[^"]*"/$1"$s"/
     or die "apply.sh: no premium() definition to rewrite\n";
+  # 0 means "free" here; custom.pl truncates a group at 4-5 items without it
+  # the STOR2RRD module has premium() only, so absence is normal; complain
+  # only when the sub is there and the rewrite failed to take
+  if ( /sub\s+get_lpar_num/ ) {
+    s/(sub\s+get_lpar_num\s*\{\s*return\s+)0\b/${1}1/
+      or warn "apply.sh: get_lpar_num() present but not rewritten, "
+            . "custom groups may stay capped\n";
+  }
   s{\A}{"# Modified by the '"$MARKER"': premium() returns a 6-character\n"
-       . "# string, which is what every free-edition cap in this product tests.\n"
+       . "# string and get_lpar_num() returns true - between them every\n"
+       . "# free-edition cap in this product is lifted.\n"
        . "# Licensed under the GNU General Public License v3 or later.\n\n"}e;
 ' "$SRC" > "$EDITION.xoruxfork-tmp"
 mv "$EDITION.xoruxfork-tmp" "$EDITION"
