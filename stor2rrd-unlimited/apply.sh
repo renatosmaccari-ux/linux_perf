@@ -158,13 +158,29 @@ edition_string() {
 # ------------------------------------------------- platform marker files
 # LPAR2RRD hex-escapes these paths in HostCfg.pm; decode them rather than
 # hardcoding, so a version that adds a platform is picked up automatically.
+# Every html/.<letter> the product tests is a per-technology gate: .p Power,
+# .v VMware, .x XenServer, .h Hyper-V, .l Linux, .s Solaris, .o oVirt,
+# .n Nutanix, .t OpenShift, .m OracleVM, .a Proxmox, .f FusionCompute,
+# .z Azure, .r Docker, .b OracleDB, .g PostgreSQL, .i Db2, .q MS SQL.
+# They gate more than the device count: custom.pl graphs only the first 4
+# items of a custom group when the matching marker is missing.
+#
+# Deriving them from HostCfg.pm alone found five. They are referenced in two
+# forms and across many files, so scan the whole tree for both.
 marker_list() {
-  [ -f "$HOSTCFG" ] || return 0
-  perl -ne '
-    while ( /basedir((?:\\x[0-9A-Fa-f]{2})+)/g ) {
-      my $p = $1; $p =~ s/\\x([0-9A-Fa-f]{2})/chr(hex($1))/ge;
-      print "$p\n" if $p =~ m{^/html/\.};
-    }' "$HOSTCFG" | sort -u
+  [ -d "$S2R/bin" ] || return 0
+  {
+    # plain:  -f "$basedir/html/.p"   /  [ -f "$INPUTDIR/html/.p" ]
+    grep -rhoE 'html/\.[a-z]\b' "$S2R/bin" "$S2R/lpar2rrd-cgi" "$S2R/stor2rrd-cgi" \
+      2>/dev/null | sed 's|^html|/html|'
+    # hex-escaped, the way HostCfg.pm hides them
+    grep -rhoE 'basedir(\\x[0-9A-Fa-f]{2})+' "$S2R/bin" 2>/dev/null | perl -ne '
+      s/^basedir//;
+      s/\\x([0-9A-Fa-f]{2})/chr(hex($1))/ge;
+      print if m{^/html/\.[a-z]$};
+      print "\n";
+    '
+  } | grep -E '^/html/\.[a-z]$' | sort -u
 }
 
 # ------------------------------------------------------------------- hardening
