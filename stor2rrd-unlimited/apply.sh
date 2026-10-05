@@ -610,5 +610,26 @@ fi
 # force the GUI to rebuild menu.txt so the edition flag flips to full
 rm -f "$S2R/tmp/menu.txt" "$S2R/tmp/menu.txt-tmp" 2>/dev/null || true
 
+# The custom-group limit notice is sticky. custom.pl copies html/.li into
+# tmp/.custom-group-<group>-n.cmd and www/custom/<group>/ll the first time a
+# group exceeds four items, detail-cgi.pl prints it whenever that file exists -
+# it never re-checks the edition - and nothing ever deletes it. Lifting the cap
+# therefore leaves the warning on screen and the group still looking capped.
+limpa_avisos() {
+  n=0
+  for f in "$S2R"/tmp/.custom-group-*-n.cmd; do
+    [ -f "$f" ] && rm -f "$f" && n=$((n + 1))
+  done
+  for d in "$S2R"/www "$S2R"/html "$WEBDIR"; do
+    [ -n "$d" ] && [ -d "$d/custom" ] || continue
+    for f in "$d"/custom/*/ll; do
+      [ -f "$f" ] && rm -f "$f" && n=$((n + 1))
+    done
+  done
+  [ "$n" -gt 0 ] && echo "cleared       : $n stale custom-group limit notice(s)"
+  return 0
+}
+limpa_avisos
+
 echo
 report_status
