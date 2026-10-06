@@ -198,6 +198,117 @@ collection (fallback inert, zero extra HMC calls).
 This is a workaround, not a cure: the broken VIOS's data is still unavailable,
 because the HMC will not serve it. The real fix is on the HMC/VIOS side.
 
+**LPAR2RRD — a failed `cmd=json` kills every button on a configuration page.**
+Every New, Edit, Clone, Delete and Connection Test button is bound *inside* the
+callback of `$.getJSON('/lpar2rrd-cgi/hosts.sh?cmd=json')` in
+`html/jquery/main.js:6113`. If that request fails, or its JSON does not parse,
+the callback never runs: the buttons render and do nothing, the host table stays
+empty, and nothing on screen says why. The fix chains a `.fail()` so the reason
+is reported. It does not make a broken endpoint work — it stops the page from
+failing in silence. Body in `patches/hostcfg-json-failure.js`.
+
+**LPAR2RRD — one malformed record blanks the whole page, buttons included.**
+Inside that same callback, `main.js:6197` reads
+
+```js
+if (! val.host ) { val.host = val.hosts[0]; }
+```
+
+An OracleDB entry saved with only `uuid` and `dataguard` — no `host`, no
+`hosts` — makes `val.hosts[0]` throw `TypeError: Cannot read properties of
+undefined (reading '0')`. That is a *synchronous* exception, which the `.fail()`
+above cannot catch: it aborts the `$.each` over the aliases, the callback with
+it, and the page ends up with zero rows and dead buttons although the JSON
+listed six entries. Reproduced with a live `hosts.json`: stock renders 0 of 2
+rows, patched renders 2 of 2. Body in `patches/oracledb-host-undefined.js`.
+
+**LPAR2RRD — `write_json` is not atomic, so collectors read truncated JSON.**
+`Xorux_lib::write_json` is the write path for every JSON file the product
+produces — 225 call sites across 57 scripts. It writes to a `File::Temp` file in
+`/tmp` and then copies it over the destination:
+
+```perl
+my ( $fh, $file_name ) = tempfile( UNLINK => 1 );
+print $fh $json->encode($hash_ref);
+close($fh);
+copy( $file_name, $path );
+```
+
+`File::Copy::copy` truncates the destination and streams into it, so it is not
+atomic, and its return value is never checked. Two consequences:
+
+- a reader that opens the file mid-copy gets cut-off JSON;
+- a write that fails partway (a full disk) leaves the destination truncated for
+  good, while `write_json` still returns 1 and the caller logs success.
+
+Seen on a live system as `data/OracleDB/<alias>/configuration/conf.json`
+failing to parse at **character offset 303104** — 74 × 4096, a block boundary,
+not the end of a JSON document — which silently dropped that whole database
+instance out of the collection while its four siblings ran fine.
+
+Measured with a reader looping over a 277 KB file while a writer rewrote it,
+12 seconds each:
+
+| `write_json` | reads | reads that got cut-off JSON |
+|---|---|---|
+| stock | 68 | **18** (26%) |
+| patched | 54 | **0** |
+
+The fix writes a sibling temp file in the *destination* directory and
+`rename()`s it into place — atomic within one filesystem — with `print`,
+`close`, the byte count and `rename` all checked, and the previous file's mode
+and group carried over so the web server keeps its read access. The original
+author's own commented-out code did exactly this; the `/tmp` tempfile that
+replaced it is why `rename` was no longer possible, and writing in the
+destination directory also removes the leftover `/tmp` files their comment
+complains about. Body in `patches/write-json-atomic.pl`. STOR2RRD's
+`Xorux_lib.pm` has no `write_json`, so the fix skips there.
+
+The patch stops new corruption; it does not repair files already cut off.
+`--fix-vendor-bugs` therefore also installs **`bin/acha-json-corrompido.pl`**,
+which walks `data/` and reports every `.json` that is empty or will not decode,
+flagging block-aligned sizes as interrupted writes. With `--apply` it renames
+each one to `.CORROMPIDO-<timestamp>` so the next collection regenerates it:
+
+```
+perl -I/home/lpar2rrd/lpar2rrd/lib /home/lpar2rrd/lpar2rrd/bin/acha-json-corrompido.pl
+perl -I/home/lpar2rrd/lpar2rrd/lib /home/lpar2rrd/lpar2rrd/bin/acha-json-corrompido.pl --apply
+```
+
+**LPAR2RRD — saving the host configuration can empty `hosts.json`.**
+`bin/host_cfg.pl:246` opens the file for writing *before* parsing the payload:
+
+```perl
+if ( open( my $CFG, ">", "$cfgdir/hosts.json" ) ) {
+  my $cfg = decode_json( $PAR{acl} );
+```
+
+`open(">")` truncates immediately, so a payload that does not parse — a
+truncated request, a lost parameter — kills `decode_json` with the file already
+at zero bytes, and every configured device goes with it. These installations
+accumulate `hosts.json.CORROMPIDO.bak-*` and `hosts.json.REPAIRED` files for
+exactly this reason. The write was unchecked too (`print` and `close` return
+values ignored), so a full disk produced a cut-off file under a "Hosts
+configuration has been successfully saved!" message, and the `flock(LOCK_EX)`
+came *after* the truncation, which is too late to protect anything.
+
+The same four payloads against the stock block and the patched one:
+
+| payload | stock | patched |
+|---|---|---|
+| valid | saved | saved |
+| truncated JSON | **hosts.json → 0 bytes** | untouched, error reported |
+| empty | **hosts.json → 0 bytes** | untouched, error reported |
+| valid JSON, no `platforms` | **overwritten with 45 bytes** | untouched, error reported |
+| `[1,2,3]` | **hosts.json → 0 bytes** | untouched, error reported |
+
+The fix validates the payload before touching the file, writes to a sibling temp
+and `rename()`s it in, checks the write, preserves the file's mode and group,
+and reports a failure instead of claiming success — the previous configuration
+survives every failure path. Unchanged-password merging and the change log still
+work. Bodies in `patches/hostsjson-atomic-open.pl` and
+`patches/hostsjson-atomic-write.pl`.
+
 ## Shared-tree permissions (`--fix-permissions`, opt-in)
 
 Two users touch an installed tree:

@@ -126,6 +126,7 @@ HARDEN_FILES="$HOSTCFG $DEVCFG $ALERTPM $MAINJS $LIBJS"
 # files touched by --fix-vendor-bugs, kept apart from the cap removal
 HOSTCFGPL="$S2R/bin/host_cfg.pl"
 RESTAPIPL="$S2R/bin/hmc_rest_api.pl"
+XORUXLIB="$S2R/bin/Xorux_lib.pm"
 
 # the GUI installer: it rebuilds tmp/menu.txt and copies html/ into the web
 # directory on every run, so a new page has to be registered in both places
@@ -141,7 +142,7 @@ if [ -d "$S2R/lpar2rrd-cgi" ]; then
 else
   CGIDIR="$S2R/stor2rrd-cgi"
 fi
-VENDORFIX_FILES="$HOSTCFGPL $RESTAPIPL $MAINJS"
+VENDORFIX_FILES="$HOSTCFGPL $RESTAPIPL $XORUXLIB $MAINJS"
 
 MANIFEST="$S2R/.xoruxfork-created"
 
@@ -235,8 +236,9 @@ perl_ok() {
 
 vendorfix_file() {
   case ${1##*/} in
-    host_cfg.pl)     vendorfix_hostcfg "$1" ;;
+    host_cfg.pl)     vendorfix_hostcfg "$1"; vendorfix_hostsjson "$1" ;;
     hmc_rest_api.pl) vendorfix_restapi "$1" ;;
+    Xorux_lib.pm)    vendorfix_xoruxlib "$1" ;;
     main.js)         vendorfix_mainjs  "$1" ;;
   esac
 }
@@ -347,6 +349,126 @@ vendorfix_hostcfg() {
     return 1
   fi
   echo "  fixed   : ${f#$S2R/} (platform=ibm now reaches the HMC/CMC tabs)"
+}
+
+# The atomic write_json above stops new corruption; it does not repair files
+# that are already cut off. Ship the finder alongside the product's own scripts
+# so there is something to run after the fix goes in.
+instala_ferramenta() {
+  origem="$SELF_DIR/tools/$1"
+  [ -f "$origem" ] || return 0
+  destino="$S2R/bin/$1"
+  if [ -f "$destino" ] && cmp -s "$origem" "$destino"; then return 0; fi
+  cp -p "$origem" "$destino" || return 1
+  chmod 755 "$destino"
+  grep -qx "/bin/$1" "$MANIFEST" 2>/dev/null || echo "/bin/$1" >> "$MANIFEST"
+  echo "  installed: bin/$1 (lista e tira do caminho JSON truncado em data/)"
+}
+
+# LPAR2RRD - Xorux_lib::write_json() is the write path for every JSON file the
+#   product produces (225 call sites). It writes to a File::Temp file in /tmp
+#   and then File::Copy::copy()s it over the destination. copy() truncates the
+#   destination and streams into it, so it is not atomic: any reader that opens
+#   the file mid-copy sees cut-off JSON, and a failed write (a full disk) leaves
+#   the destination truncated for good. The return of copy() was never checked,
+#   so write_json reported success either way.
+#
+#   Seen in the field as data/OracleDB/<alias>/configuration/conf.json failing
+#   to parse at "character offset 303104" - 74 x 4096, a block boundary - which
+#   dropped the whole database instance out of the collection.
+#
+#   Replace the sub with a version that writes a sibling temp file in the
+#   destination directory and rename()s it into place: atomic within one
+#   filesystem, with print, close, length and rename all checked.
+#   STOR2RRD's Xorux_lib.pm has no write_json, so its absence is normal there.
+vendorfix_xoruxlib() {
+  f=$1
+  [ -f "$f" ] || return 0
+  grep -q 'xoruxfork: gravacao atomica' "$f" && return 0        # already fixed
+  grep -q '^sub write_json {' "$f" || return 0                  # STOR2RRD
+  corpo="$SELF_DIR/patches/write-json-atomic.pl"
+  if [ ! -f "$corpo" ]; then
+    echo "apply.sh: patches/write-json-atomic.pl missing, skipping ${f#$S2R/}" >&2
+    return 0
+  fi
+
+  compiled_before=0
+  perl_ok "$f" && compiled_before=1
+
+  [ -f "$f.xoruxfork-orig" ] || cp -p "$f" "$f.xoruxfork-orig"
+
+  CORPO="$corpo" perl -0777 -i -pe '
+    BEGIN { local $/; open my $fh, "<", $ENV{CORPO} or die; $novo = <$fh> }
+    # da assinatura ate o fecho da sub, na coluna 0: write_json e a unica sub
+    # do arquivo que termina assim logo antes de "sub read_json"
+    my $n = s/^sub write_json \{\n.*?\n\}\n(?=\nsub read_json \{)/$novo/ms;
+    die "apply.sh: write_json() body not found in Xorux_lib.pm\n" unless $n == 1;
+  ' "$f" || { mv "$f.xoruxfork-orig" "$f"; return 1; }
+
+  if [ "$compiled_before" -eq 1 ] && ! perl_ok "$f"; then
+    echo "apply.sh: ${f#$S2R/} compiled before the vendor fix and not after, restoring" >&2
+    mv "$f.xoruxfork-orig" "$f"
+    return 1
+  fi
+  echo "  fixed   : ${f#$S2R/} (write_json is atomic now, no more half-written conf.json)"
+}
+
+# LPAR2RRD - saving the host configuration did open(">", hosts.json) first and
+#   decode_json($PAR{acl}) second. The open truncates immediately, so a bad
+#   payload killed the decode with the file already at zero bytes and every
+#   configured device gone - the hosts.json.CORROMPIDO backups these installs
+#   accumulate. The write itself was unchecked too (print, close), so a full
+#   disk produced a cut-off file under a "successfully saved" message, and
+#   flock() came after the truncation, which is too late to protect anything.
+#
+#   Validate the payload before touching the file, write to a sibling temp and
+#   rename() it into place, and report a failed write instead of claiming
+#   success. The previous configuration survives every failure path.
+vendorfix_hostsjson() {
+  f=$1
+  [ -f "$f" ] || return 0
+  grep -q 'xoruxfork: validar o payload ANTES' "$f" && return 0   # already fixed
+  grep -q 'if ( open( my \$CFG, ">", "\$cfgdir/hosts.json" ) ) {' "$f" || return 0
+  abre="$SELF_DIR/patches/hostsjson-atomic-open.pl"
+  grava="$SELF_DIR/patches/hostsjson-atomic-write.pl"
+  if [ ! -f "$abre" ] || [ ! -f "$grava" ]; then
+    echo "apply.sh: patches/hostsjson-atomic-*.pl missing, skipping ${f#$S2R/}" >&2
+    return 0
+  fi
+
+  compiled_before=0
+  perl_ok "$f" && compiled_before=1
+
+  # suffix proprio: vendorfix_hostcfg ja usa .xoruxfork-orig e um rollback
+  # nosso nao deve desfazer o patch dele
+  cp -p "$f" "$f.xoruxfork-prejson"
+
+  ABRE="$abre" GRAVA="$grava" perl -0777 -i -pe '
+    BEGIN {
+      local $/;
+      open my $a, "<", $ENV{ABRE}  or die; $abre  = <$a>;
+      open my $g, "<", $ENV{GRAVA} or die; $grava = <$g>;
+    }
+    # aspas duplas, nao qq{}: as ancoras tem chaves desbalanceadas
+    my $anc1 = "    if ( open( my \$CFG, \">\", \"\$cfgdir/hosts.json\" ) ) {\n"
+             . "      my \$cfg = decode_json( \$PAR{acl} );\n";
+    s/\Q$anc1\E/$abre/
+      or die "apply.sh: hosts.json open/decode pair not found\n";
+
+    my $anc2 = "      flock( \$CFG, LOCK_EX );\n"
+             . "      print \$CFG \$json->encode(\$cfg);\n"
+             . "      close \$CFG;\n";
+    s/\Q$anc2\E/$grava/
+      or die "apply.sh: hosts.json write block not found\n";
+  ' "$f" || { mv "$f.xoruxfork-prejson" "$f"; return 1; }
+
+  if [ "$compiled_before" -eq 1 ] && ! perl_ok "$f"; then
+    echo "apply.sh: ${f#$S2R/} compiled before the hosts.json fix and not after, restoring" >&2
+    mv "$f.xoruxfork-prejson" "$f"
+    return 1
+  fi
+  rm -f "$f.xoruxfork-prejson"
+  echo "  fixed   : ${f#$S2R/} (a bad save no longer empties hosts.json)"
 }
 
 # -------------------------------------------------------------- topology page
@@ -669,6 +791,7 @@ fi
 if [ "$VENDORFIX" -eq 1 ]; then
   echo "Applying vendor bug workarounds"
   for f in $VENDORFIX_FILES; do vendorfix_file "$f"; done
+  instala_ferramenta "acha-json-corrompido.pl"
 fi
 
 if [ "$ADDTOPO" -eq 1 ]; then
