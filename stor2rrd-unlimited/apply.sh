@@ -127,6 +127,8 @@ HARDEN_FILES="$HOSTCFG $DEVCFG $ALERTPM $MAINJS $LIBJS"
 HOSTCFGPL="$S2R/bin/host_cfg.pl"
 RESTAPIPL="$S2R/bin/hmc_rest_api.pl"
 XORUXLIB="$S2R/bin/Xorux_lib.pm"
+NUTANIXPM="$S2R/bin/Nutanix.pm"
+NUTANIXTEST="$S2R/bin/nutanix-apitest.pl"
 
 # the GUI installer: it rebuilds tmp/menu.txt and copies html/ into the web
 # directory on every run, so a new page has to be registered in both places
@@ -142,7 +144,7 @@ if [ -d "$S2R/lpar2rrd-cgi" ]; then
 else
   CGIDIR="$S2R/stor2rrd-cgi"
 fi
-VENDORFIX_FILES="$HOSTCFGPL $RESTAPIPL $XORUXLIB $MAINJS"
+VENDORFIX_FILES="$HOSTCFGPL $RESTAPIPL $XORUXLIB $NUTANIXPM $NUTANIXTEST $MAINJS"
 
 MANIFEST="$S2R/.xoruxfork-created"
 
@@ -239,6 +241,8 @@ vendorfix_file() {
     host_cfg.pl)     vendorfix_hostcfg "$1"; vendorfix_hostsjson "$1" ;;
     hmc_rest_api.pl) vendorfix_restapi "$1" ;;
     Xorux_lib.pm)    vendorfix_xoruxlib "$1" ;;
+    Nutanix.pm)      vendorfix_nutanix "$1" ;;
+    nutanix-apitest.pl) vendorfix_nutanixtest "$1" ;;
     main.js)         vendorfix_mainjs  "$1" ;;
   esac
 }
@@ -363,6 +367,94 @@ instala_ferramenta() {
   chmod 755 "$destino"
   grep -qx "/bin/$1" "$MANIFEST" 2>/dev/null || echo "/bin/$1" >> "$MANIFEST"
   echo "  installed: bin/$1 (lista e tira do caminho JSON truncado em data/)"
+}
+
+# LPAR2RRD - a Nutanix 401 is logged as a wall of HTML and shown as nothing.
+#   The three restCall subs in bin/Nutanix.pm log
+#   `Dumper( $response->content )` with no status code, so a Prism that answers
+#   401 fills logs/error.log-nutanix with the Tomcat error page once per
+#   endpoint - about 180 lines to convey one number - while the GUI's
+#   connection test (bin/nutanix-apitest.pl) only ever says "No clusters
+#   reached", whatever went wrong. 401 (wrong password, no role, locked
+#   account), 403 (authenticated, no role), 404 (that address is a Prism
+#   Central) and a timeout are indistinguishable on screen.
+#
+#   Log the status code, the reason and WWW-Authenticate, reduce an HTML error
+#   page to its <title>, and let the connection test name the cause. Also fixes
+#   the "uninitialized value in numeric ge" that the test emits on every
+#   failure, because $clusters is undef on the error path.
+vendorfix_nutanix() {
+  f=$1
+  [ -f "$f" ] || return 0
+  grep -q 'xoruxfork: dizer o codigo HTTP' "$f" && return 0     # already fixed
+  grep -q 'ERROR: Can.t handle request' "$f" || return 0
+  corpo="$SELF_DIR/patches/nutanix-http-status.pl"
+  if [ ! -f "$corpo" ]; then
+    echo "apply.sh: patches/nutanix-http-status.pl missing, skipping ${f#$S2R/}" >&2
+    return 0
+  fi
+
+  compiled_before=0
+  perl_ok "$f" && compiled_before=1
+
+  [ -f "$f.xoruxfork-orig" ] || cp -p "$f" "$f.xoruxfork-orig"
+
+  CORPO="$corpo" perl -0777 -i -pe '
+    BEGIN { local $/; open my $fh, "<", $ENV{CORPO} or die; $novo = <$fh> }
+    # o helper entra antes de sub error, que fecha o modulo
+    s/^sub error \{/$novo . "sub error {"/me
+      or die "apply.sh: no sub error in Nutanix.pm to anchor on\n";
+    # as tres chamadas identicas, uma por versao da API. A ancora e montada
+    # como string entre aspas duplas porque \Q...\E nao interpreta \x27, e o
+    # programa esta entre aspas simples do shell: nao cabe um apostrofo literal.
+    my $velho = "error( \"ERROR: Can\x27t handle request (\".\$url.\"): \" "
+              . ". Dumper( \$response->content ) );";
+    my $n = s/\Q$velho\E/error( resumo_http( \$url, \$response ) );/g;
+    die "apply.sh: expected 3 Nutanix error calls, rewrote $n\n" unless $n == 3;
+  ' "$f" || { mv "$f.xoruxfork-orig" "$f"; return 1; }
+
+  if [ "$compiled_before" -eq 1 ] && ! perl_ok "$f"; then
+    echo "apply.sh: ${f#$S2R/} compiled before the vendor fix and not after, restoring" >&2
+    mv "$f.xoruxfork-orig" "$f"
+    return 1
+  fi
+  echo "  fixed   : ${f#$S2R/} (a Nutanix error now logs its HTTP status, not a page of HTML)"
+}
+
+vendorfix_nutanixtest() {
+  f=$1
+  [ -f "$f" ] || return 0
+  grep -q 'xoruxfork: dizer por que a conexao falhou' "$f" && return 0   # already fixed
+  grep -q 'No clusters reached' "$f" || return 0
+  corpo="$SELF_DIR/patches/nutanix-apitest-status.pl"
+  if [ ! -f "$corpo" ]; then
+    echo "apply.sh: patches/nutanix-apitest-status.pl missing, skipping ${f#$S2R/}" >&2
+    return 0
+  fi
+
+  compiled_before=0
+  perl_ok "$f" && compiled_before=1
+
+  [ -f "$f.xoruxfork-orig" ] || cp -p "$f" "$f.xoruxfork-orig"
+
+  CORPO="$corpo" perl -0777 -i -pe '
+    BEGIN { local $/; open my $fh, "<", $ENV{CORPO} or die; $novo = <$fh> }
+    my $anc = "if ( \$clusters->{metadata}{totalEntities} >= 1 ) {\n"
+            . "  Xorux_lib::status_json( 1, \"Reached \" . \$clusters->{metadata}{totalEntities} . \" clusters\" );\n"
+            . "}\n"
+            . "else {\n"
+            . "  Xorux_lib::status_json( 0, \"No clusters reached\" );\n"
+            . "}\n";
+    s/\Q$anc\E/$novo/
+      or die "apply.sh: nutanix-apitest.pl verdict block not found\n";
+  ' "$f" || { mv "$f.xoruxfork-orig" "$f"; return 1; }
+
+  if [ "$compiled_before" -eq 1 ] && ! perl_ok "$f"; then
+    echo "apply.sh: ${f#$S2R/} compiled before the vendor fix and not after, restoring" >&2
+    mv "$f.xoruxfork-orig" "$f"
+    return 1
+  fi
+  echo "  fixed   : ${f#$S2R/} (the connection test names the cause instead of \"No clusters reached\")"
 }
 
 # LPAR2RRD - Xorux_lib::write_json() is the write path for every JSON file the

@@ -309,6 +309,39 @@ survives every failure path. Unchanged-password merging and the change log still
 work. Bodies in `patches/hostsjson-atomic-open.pl` and
 `patches/hostsjson-atomic-write.pl`.
 
+**LPAR2RRD — a Nutanix 401 is logged as a wall of HTML and shown as nothing.**
+The three `restCall` subs in `bin/Nutanix.pm` log the response body with no
+status code:
+
+```perl
+error( "ERROR: Can't handle request (".$url."): " . Dumper( $response->content ) );
+```
+
+A Prism that answers 401 therefore fills `logs/error.log-nutanix` with the
+Tomcat error page once per endpoint — roughly 180 lines to convey one number —
+while the GUI's connection test (`bin/nutanix-apitest.pl`) says only **"No
+clusters reached"**, whatever went wrong. Wrong password, a user with no role,
+an address that is a Prism Central rather than a Prism Element, and a plain
+timeout are indistinguishable on screen; the one fact that separates them, the
+HTTP status, is the one the product throws away. The test also read
+`$clusters->{metadata}{totalEntities}` on an undefined `$clusters`, so every
+failure emitted "Use of uninitialized value in numeric ge".
+
+The fix logs the status, the reason phrase and `WWW-Authenticate`, reduces an
+HTML error page to its `<title>`, and lets the connection test name the cause.
+Verified against a stub Prism in four states:
+
+| Prism answers | stock test says | patched test says |
+|---|---|---|
+| 401 + Tomcat page | No clusters reached | HTTP 401 Unauthorized — check the password, the user's role (Viewer minimum) and whether the account is locked |
+| 403 | No clusters reached | HTTP 403 Forbidden — authenticated, but no role that can read the API |
+| connection refused | No clusters reached | HTTP 500 Can't connect to … (Connection refused) |
+| 200, 2 clusters | Reached 2 clusters | Reached 2 clusters |
+
+Bodies in `patches/nutanix-http-status.pl` and
+`patches/nutanix-apitest-status.pl`. Both skip cleanly on products without the
+Nutanix module.
+
 ## Shared-tree permissions (`--fix-permissions`, opt-in)
 
 Two users touch an installed tree:
