@@ -69,7 +69,8 @@ for c in ${TOPO_PY:-} python3 /usr/bin/python3 /opt/freeware/bin/python3 \
   v=$("$c" -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null)
   maior=$("$c" -c 'import sys;sys.exit(0 if sys.version_info[0]>=3 else 1)' 2>/dev/null && echo sim || echo nao)
   if [ "$maior" = sim ]; then
-    ok "$c = $v  (serve)"; ACHOU=$c; break
+    CAMINHO=$(command -v "$c")
+    ok "$c = $v  em $CAMINHO"; ACHOU=$CAMINHO; break
   else
     aviso "$c = $v  (NAO serve: os scripts exigem 3.x)"
   fi
@@ -84,6 +85,45 @@ if [ -z "$ACHOU" ]; then
   echo
   echo "        Oracle Linux / RHEL 7:   yum install -y python3"
   echo "        se o repositorio nao tiver:  yum install -y rh-python36"
+fi
+
+
+# O verificador roda no seu shell; o gancho roda pelo cron, com PATH minimo e
+# sem os perfis carregados. Nao basta existir python3: o gancho tem de achar.
+if [ -n "$ACHOU" ]; then
+  echo
+  echo "-- o gancho INSTALADO acha este python3? --"
+  G="$INPUTDIR/topology/bin/user_script_topology.sh"
+  if [ -f "$G" ]; then
+    if grep -q "TOPO_PY" "$G"; then
+      ok "o gancho aceita TOPO_PY (versao nova)"
+    else
+      aviso "gancho antigo: nao aceita TOPO_PY nem procura o caminho do SCL"
+    fi
+    # a lista literal de candidatos do gancho instalado
+    CAND=$(sed -n 's/^for c in \(.*\); do$/\1/p;s/^for c in \(.*\) \\$/\1/p' "$G" | head -1)
+    echo "         candidatos do gancho: ${CAND:-?}"
+    ENCONTRA=nao
+    for c in $CAND; do
+      case $c in '"'"'${TOPO_PY:-}'"'"'|'"'"'$'"'"'*) continue ;; esac
+      command -v "$c" >/dev/null 2>&1 || continue
+      "$c" -c '"'"'import sys;sys.exit(0 if sys.version_info[0]>=3 else 1)'"'"' 2>/dev/null \
+        && { ENCONTRA=$(command -v "$c"); break; }
+    done
+    if [ "$ENCONTRA" = nao ]; then
+      falta "o gancho NAO acha python3 com estes candidatos"
+      echo "          python3 esta em: $ACHOU"
+      echo "          Resolva com TOPO_PY em etc/.magic, que o load.sh carrega:"
+      printf "            printf '%%s\\\\n' 'TOPO_PY=%s' 'export TOPO_PY' >> %s\n" \
+             "$ACHOU" "$INPUTDIR/etc/.magic"
+      grep -q "TOPO_PY" "$G" || \
+        echo "          ATENCAO: este gancho nao le TOPO_PY - atualize o pacote primeiro"
+    else
+      ok "o gancho acharia $ENCONTRA"
+      echo "         entao o log abaixo e de ANTES desta instalacao;"
+      echo "         rode ./load.sh e confira de novo"
+    fi
+  fi
 fi
 
 echo

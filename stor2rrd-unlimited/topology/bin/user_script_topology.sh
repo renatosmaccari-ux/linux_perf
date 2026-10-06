@@ -35,7 +35,8 @@ if [ -z "$PY" ]; then
   echo "topology: nenhum python3 encontrado - o mapa de dependencias NAO foi"
   echo "topology: montado e continuara vazio. Instale python3 (yum install -y"
   echo "topology: python3) ou aponte TOPO_PY=/caminho/python3 em etc/.magic"
-  echo "topology: nenhum python3 encontrado, mapa nao reconstruido" >> "$LOG"
+  # com data: sem ela nao da para saber se a linha e desta coleta ou de meses atras
+  echo "$(date '+%Y-%m-%d %H:%M:%S') topology: nenhum python3 encontrado, mapa nao reconstruido" >> "$LOG"
   exit 0            # never fail the collection cycle over this
 fi
 
