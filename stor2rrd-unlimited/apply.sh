@@ -141,7 +141,7 @@ if [ -d "$S2R/lpar2rrd-cgi" ]; then
 else
   CGIDIR="$S2R/stor2rrd-cgi"
 fi
-VENDORFIX_FILES="$HOSTCFGPL $RESTAPIPL"
+VENDORFIX_FILES="$HOSTCFGPL $RESTAPIPL $MAINJS"
 
 MANIFEST="$S2R/.xoruxfork-created"
 
@@ -237,7 +237,41 @@ vendorfix_file() {
   case ${1##*/} in
     host_cfg.pl)     vendorfix_hostcfg "$1" ;;
     hmc_rest_api.pl) vendorfix_restapi "$1" ;;
+    main.js)         vendorfix_mainjs  "$1" ;;
   esac
+}
+
+# LPAR2RRD - every button on a configuration page is bound inside the callback
+#   of $.getJSON('/lpar2rrd-cgi/hosts.sh?cmd=json'). If that request fails, or
+#   its JSON does not parse, the callback never runs: New, Edit, Clone, Delete
+#   and Connection Test all render and do nothing, the host table stays empty,
+#   and nothing on screen says why. The usual causes are local - the CGI
+#   returning 500, or etc/web_config/hosts.json unreadable by the web server
+#   user - but the page hides them.
+#
+#   Chain a .fail() so the reason is shown instead of swallowed. This does not
+#   make a broken endpoint work; it stops the page from failing silently.
+vendorfix_mainjs() {
+  f=$1
+  [ -f "$f" ] || return 0
+  grep -q 'xoruxfork: hosts.sh cmd=json' "$f" && return 0   # already fixed
+  corpo="$SELF_DIR/patches/hostcfg-json-failure.js"
+  if [ ! -f "$corpo" ]; then
+    echo "apply.sh: patches/hostcfg-json-failure.js missing, skipping $f" >&2
+    return 0
+  fi
+
+  [ -f "$f.xoruxfork-orig" ] || cp -p "$f" "$f.xoruxfork-orig"
+
+  CORPO="$corpo" perl -0777 -i -pe '
+    BEGIN { local $/; open my $fh, "<", $ENV{CORPO} or die; $novo = <$fh> }
+    # fecho do callback do getJSON, seguido do teste de edicao: unico no arquivo
+    my $anc = "\t\t\t}\n\t\t});\n\t\tif (sysInfo.free == 1) {\n";
+    my $n = s/\Q$anc\E/$novo/;
+    die "apply.sh: cmd=json callback not found in main.js\n" unless $n == 1;
+  ' "$f" || { mv "$f.xoruxfork-orig" "$f"; return 1; }
+
+  echo "  fixed   : ${f#$S2R/} (a failed cmd=json now says so instead of killing every button)"
 }
 
 # LPAR2RRD - one VIOS with a broken PhysicalVolume inventory makes the HMC
