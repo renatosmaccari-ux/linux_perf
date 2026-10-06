@@ -362,13 +362,58 @@ vendorfix_hostcfg() {
 # so there is something to run after the fix goes in.
 instala_ferramenta() {
   origem="$SELF_DIR/tools/$1"
+  descricao=${2:-}
   [ -f "$origem" ] || return 0
   destino="$S2R/bin/$1"
   if [ -f "$destino" ] && cmp -s "$origem" "$destino"; then return 0; fi
   cp -p "$origem" "$destino" || return 1
   chmod 755 "$destino"
   grep -qx "/bin/$1" "$MANIFEST" 2>/dev/null || echo "/bin/$1" >> "$MANIFEST"
-  echo "  installed: bin/$1 (lista e tira do caminho JSON truncado em data/)"
+  echo "  installed: bin/$1${descricao:+ ($descricao)}"
+}
+
+# Both products - "$obj->method" inside a double-quoted string does not call the
+#   method. Perl interpolates $obj, which stamps HTTP::Response=HASH(0x...),
+#   and leaves "->status_line" as text. The products do this in 19 places, every
+#   one of them on an error path, so the status code that would say whether a
+#   request was 401, 403, 500 or a timeout is the one thing the message loses.
+#   Seen in a live log as
+#     ERROR naperf.pl: Request error: HTTP::Response=HASH(0x2aaab0d8)->status_line
+#   @{[ ... ]} evaluates the expression inside the string. Only ->method is
+#   touched: ->{key} and ->[index] interpolate correctly and are left alone, as
+#   is ->method(args), which needs a human to look at it.
+vendorfix_interpolacao() {
+  [ -d "$S2R/bin" ] || return 0
+  prog="$SELF_DIR/patches/interpolacao-metodo.pl"
+  if [ ! -f "$prog" ]; then
+    echo "apply.sh: patches/interpolacao-metodo.pl missing, skipping" >&2
+    return 0
+  fi
+
+  total=0
+  arquivos=0
+  for f in "$S2R"/bin/*.pl "$S2R"/bin/*.pm; do
+    [ -f "$f" ] || continue
+    grep -q '@{\[' "$f" 2>/dev/null && continue        # already fixed
+
+    compiled_before=0
+    perl_ok "$f" && compiled_before=1
+
+    n=$(perl "$prog" "$f" 2>/dev/null) || continue
+    [ "${n:-0}" -gt 0 ] || continue
+
+    if [ "$compiled_before" -eq 1 ] && ! perl_ok "$f"; then
+      echo "apply.sh: ${f#$S2R/} compiled before the interpolation fix and not after" >&2
+      [ -f "$f.xoruxfork-novo" ] && rm -f "$f.xoruxfork-novo"
+      continue
+    fi
+    total=$((total + n))
+    arquivos=$((arquivos + 1))
+  done
+
+  [ "$total" -gt 0 ] && \
+    echo "  fixed   : $total error message(s) in $arquivos file(s) now print the status, not HASH(0x...)->method"
+  return 0
 }
 
 # LPAR2RRD - an OracleDB datasource with no value becomes "U" and disappears.
@@ -940,7 +985,11 @@ fi
 if [ "$VENDORFIX" -eq 1 ]; then
   echo "Applying vendor bug workarounds"
   for f in $VENDORFIX_FILES; do vendorfix_file "$f"; done
-  instala_ferramenta "acha-json-corrompido.pl"
+  vendorfix_interpolacao
+  instala_ferramenta "acha-json-corrompido.pl" \
+    "lista e tira do caminho JSON truncado em data/"
+  instala_ferramenta "escalona-cron.sh" \
+    "espalha os coletores pelos minutos, para nao gravarem todos de uma vez"
 fi
 
 if [ "$ADDTOPO" -eq 1 ]; then

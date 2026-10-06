@@ -577,6 +577,59 @@ trademark permission, so rename the product and drop the vendor branding
 before publishing a fork. Keep support requests away from XORUX; a modified
 build is yours to support.
 
+**Both products — `"$obj->method"` prints `HASH(0x...)->method` instead of calling it.**
+In Perl, a method call inside a double-quoted string is not a method call: `$obj`
+interpolates — stamping `HTTP::Response=HASH(0x2aaab0d8)` — and `->status_line`
+stays as text. The two products do this in **19 places, every one on an error
+path**, so the status code that would distinguish a 401 from a 403, a 500 or a
+timeout is exactly what the message throws away. From a live log:
+
+```
+ERROR naperf.pl: Request error: HTTP::Response=HASH(0x2aaab0d8)->status_line
+```
+
+| product | files | occurrences |
+|---|---|---|
+| STOR2RRD | `naperf.pl`, `falconstorperf.pl` (5), `falconstorconf.pl` (3), `falconstor_apitest.pl` (2), `dothill_apitest.pl` (2), `Xorux_lib.pm`, `AlertStor2rrd.pm` | 15 |
+| LPAR2RRD | `alrt.pl`, `hmc_rest_api.pl`, `lpar2rrd-daemon.pl`, `orvm-api2json.pl` | 4 |
+
+`@{[ ... ]}` evaluates the expression inside the string. Only `->method` is
+rewritten: `->{key}` and `->[index]` already interpolate correctly and are left
+alone, as is `->method(args)`, which needs a human to look at it. Verified by
+compiling every `.pl` and `.pm` in both trees before and after — **zero
+regressions** — and by running the rewritten form against a stub response:
+
+```
+ORIGINAL : Request error: FakeResp=HASH(0x55852a06e6e8)->status_line
+CORRIGIDO: Request error: 401 Unauthorized
+```
+
+Body in `patches/interpolacao-metodo.pl`.
+
+## Staggering the collectors (`tools/escalona-cron.sh`)
+
+The stock installation puts every collector on the same minute. On a live
+system that meant **15 LPAR2RRD processes firing at :00** and 6 STOR2RRD
+collectors together every 5 minutes — all of them writing JSON through the same
+`write_json`, while `load.sh` read the tree underneath them.
+
+The diagnostic bundle caught the result: 10 files under `tmp/restapi/` that
+would not decode, **every one of them an exact multiple of 4096 bytes** (1×, 2×,
+3×, 5×, 6×) — end of block, not end of JSON.
+
+Run as root; it only reports until given `--apply`, keeps a backup in
+`/var/tmp/`, verifies the rewritten crontab has the same number of lines and
+that only the minute fields changed, and leaves `load.sh` on its own minute
+because it aggregates what the others collect. Measured on that system:
+
+| crontab | worst minute, before | after |
+|---|---|---|
+| lpar2rrd | 16 collectors | 4 |
+| stor2rrd | 10 collectors | 6 (floor: a 5-minute interval has only 5 slots for 6 collectors — the script says so) |
+
+Staggering narrows the window; the atomic `write_json` closes the rest. Both
+together.
+
 ## Diagnostic bundle (`tools/coleta-diagnostico.sh`)
 
 Run as root. It finds every LPAR2RRD and STOR2RRD tree on the machine — from the
