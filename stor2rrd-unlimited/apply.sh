@@ -129,6 +129,7 @@ RESTAPIPL="$S2R/bin/hmc_rest_api.pl"
 XORUXLIB="$S2R/bin/Xorux_lib.pm"
 NUTANIXPM="$S2R/bin/Nutanix.pm"
 NUTANIXTEST="$S2R/bin/nutanix-apitest.pl"
+ODBLOAD="$S2R/bin/OracleDBLoadDataModule.pm"
 
 # the GUI installer: it rebuilds tmp/menu.txt and copies html/ into the web
 # directory on every run, so a new page has to be registered in both places
@@ -144,7 +145,7 @@ if [ -d "$S2R/lpar2rrd-cgi" ]; then
 else
   CGIDIR="$S2R/stor2rrd-cgi"
 fi
-VENDORFIX_FILES="$HOSTCFGPL $RESTAPIPL $XORUXLIB $NUTANIXPM $NUTANIXTEST $MAINJS"
+VENDORFIX_FILES="$HOSTCFGPL $RESTAPIPL $XORUXLIB $NUTANIXPM $NUTANIXTEST $ODBLOAD $MAINJS"
 
 MANIFEST="$S2R/.xoruxfork-created"
 
@@ -243,6 +244,7 @@ vendorfix_file() {
     Xorux_lib.pm)    vendorfix_xoruxlib "$1" ;;
     Nutanix.pm)      vendorfix_nutanix "$1" ;;
     nutanix-apitest.pl) vendorfix_nutanixtest "$1" ;;
+    OracleDBLoadDataModule.pm) vendorfix_oracledb "$1" ;;
     main.js)         vendorfix_mainjs  "$1" ;;
   esac
 }
@@ -367,6 +369,61 @@ instala_ferramenta() {
   chmod 755 "$destino"
   grep -qx "/bin/$1" "$MANIFEST" 2>/dev/null || echo "/bin/$1" >> "$MANIFEST"
   echo "  installed: bin/$1 (lista e tira do caminho JSON truncado em data/)"
+}
+
+# LPAR2RRD - an OracleDB datasource with no value becomes "U" and disappears.
+#   OracleDBLoadDataModule::update_rrd substitutes "U" for every missing metric
+#   and says nothing. The graph then draws -nan and no part of the interface
+#   explains it. On a live system all four instances wrote
+#     Capacity  <ts>:4391.78:490.48:U          (log_capacity missing)
+#     Cpct      <ts>:U:142.20:U:U              (3 of 4 missing)
+#   because the monitoring user had no SELECT on V$LOG, V$CONTROLFILE and
+#   V$RECOVERY_FILE_DEST - ORA-00942 in the collection log, 180 lines away from
+#   the graph that went blank. Naming the view turns an unexplained -nan into a
+#   GRANT to ask the DBA for.
+vendorfix_oracledb() {
+  f=$1
+  [ -f "$f" ] || return 0
+  grep -q 'xoruxfork: dizer o que ficou sem dado' "$f" && return 0   # already fixed
+  grep -q 'sub update_rrd' "$f" || return 0
+  corpo="$SELF_DIR/patches/oracledb-missing-ds.pl"
+  decl="$SELF_DIR/patches/oracledb-missing-ds-decl.pl"
+  if [ ! -f "$corpo" ] || [ ! -f "$decl" ]; then
+    echo "apply.sh: patches/oracledb-missing-ds*.pl missing, skipping ${f#$S2R/}" >&2
+    return 0
+  fi
+
+  compiled_before=0
+  perl_ok "$f" && compiled_before=1
+
+  [ -f "$f.xoruxfork-orig" ] || cp -p "$f" "$f.xoruxfork-orig"
+
+  CORPO="$corpo" DECL="$decl" perl -0777 -i -pe '
+    BEGIN {
+      local $/;
+      open my $c, "<", $ENV{CORPO} or die; $corpo = <$c>;
+      open my $d, "<", $ENV{DECL}  or die; $decl  = <$d>;
+    }
+    # a declaracao do acumulador, junto da $update_string
+    s/^  my \$update_string = "\$act_time:";\n/$decl/m
+      or die "apply.sh: update_string declaration not found\n";
+
+    # o corpo do laco mais o print, montado com aspas duplas porque a ancora
+    # tem apostrofos e o programa esta entre aspas simples do shell
+    my $anc = "    if ( !defined \$hash{\$item} || \$hash{\$item} eq \x27\x27 ) {    #|| ! isdigit( \$hash{\$item} )\n"
+            . "      \$value = \x27U\x27;\n    }\n    else {\n      \$value = \$hash{\$item};\n    }\n"
+            . "    \$update_string .= \"\$value:\";\n  }\n"
+            . "  \$update_string = substr( \$update_string, 0, -1 );\n  print \"\\n\$update_string\\n\";\n";
+    s/\Q$anc\E/$corpo/
+      or die "apply.sh: update_rrd value loop not found\n";
+  ' "$f" || { mv "$f.xoruxfork-orig" "$f"; return 1; }
+
+  if [ "$compiled_before" -eq 1 ] && ! perl_ok "$f"; then
+    echo "apply.sh: ${f#$S2R/} compiled before the vendor fix and not after, restoring" >&2
+    mv "$f.xoruxfork-orig" "$f"
+    return 1
+  fi
+  echo "  fixed   : ${f#$S2R/} (a missing datasource now names itself and its view)"
 }
 
 # LPAR2RRD - a Nutanix 401 is logged as a wall of HTML and shown as nothing.

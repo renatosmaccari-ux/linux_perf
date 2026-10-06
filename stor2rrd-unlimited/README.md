@@ -342,6 +342,59 @@ Bodies in `patches/nutanix-http-status.pl` and
 `patches/nutanix-apitest-status.pl`. Both skip cleanly on products without the
 Nutanix module.
 
+**LPAR2RRD — an OracleDB datasource with no value becomes `U` and disappears.**
+`OracleDBLoadDataModule::update_rrd` substitutes `U` for every missing metric
+and says nothing:
+
+```perl
+if ( !defined $hash{$item} || $hash{$item} eq '' ) {
+  $value = 'U';
+}
+```
+
+The graph then draws `-nan` and nothing in the interface explains it. On a live
+system every instance wrote
+
+```
+Capacity  <ts>:4391.78687286376953125:490.487548828125:U
+Cpct      <ts>:U:142.20703125:U:U
+```
+
+— 1 of 3 and 3 of 4 datasources empty — because the monitoring user had no
+`SELECT` on `V$LOG`, `V$CONTROLFILE` and `V$RECOVERY_FILE_DEST`. The cause was
+in the same run's log as `ORA-00942: table or view does not exist`, 180 lines
+away from the three tabs that went blank (Used, Recovery File Destination,
+Online Redo Logs). The datasources map to the views one to one:
+
+| tab | datasource | source in `oracledb-sql/*_L.sql` |
+|---|---|---|
+| Used | `used`, `free` | `DBA_DATA_FILES`, `DBA_FREE_SPACE` |
+| Online Redo Logs | `log_capacity` | `V$LOG` |
+| Recovery File Destination | `recoverysize`, `recoveryused` | `V$RECOVERY_FILE_DEST` |
+| (Capacity detail) | `controlfiles`, `tempfiles` | `V$CONTROLFILE`, `DBA_TEMP_FILES` |
+
+The fix names what went missing and where it comes from, so an unexplained
+`-nan` becomes a `GRANT` to ask the DBA for:
+
+```
+oracleDB-json2rrd.pl : Cpct ORA-xxx sem dado para: controlfiles (V$CONTROLFILE),
+  recoverysize (V$RECOVERY_FILE_DEST), recoveryused (V$RECOVERY_FILE_DEST)
+  -> gravado U, grafico mostra -nan
+oracleDB-json2rrd.pl : se a origem e uma view V$, confira o GRANT SELECT do
+  usuario de monitoracao (ORA-00942 no log da coleta)
+```
+
+The update string itself is byte-identical to stock — the line is printed only
+when a datasource is missing, and stops once the grant exists. Body in
+`patches/oracledb-missing-ds.pl` and `patches/oracledb-missing-ds-decl.pl`.
+
+A note on what this fix is *not* for: an instance that is missing its `.rrd`
+files entirely has a different problem. The RRD is created inside
+`data_to_rrd`, which only runs for sections present in the collected JSON, so an
+instance whose `configuration/conf.json` failed to parse never reaches
+`oracleDB-json2rrd.pl` at all and no RRD is created for it. That is the
+truncated-JSON bug above; `bin/acha-json-corrompido.pl` finds those.
+
 ## Shared-tree permissions (`--fix-permissions`, opt-in)
 
 Two users touch an installed tree:
@@ -523,3 +576,38 @@ corresponding source, and mark modified versions as changed (§5a).
 trademark permission, so rename the product and drop the vendor branding
 before publishing a fork. Keep support requests away from XORUX; a modified
 build is yours to support.
+
+## Diagnostic bundle (`tools/coleta-diagnostico.sh`)
+
+Run as root. It finds every LPAR2RRD and STOR2RRD tree on the machine — from the
+product users' home directories, the usual paths, and running processes — and
+packs what a remote diagnosis needs:
+
+| file | what it holds |
+|---|---|
+| `00-RESUMO.txt` | one screen: versions, free disk, bad JSON, top errors, stalled RRDs |
+| `02-edicao-e-patches.txt` | `premium()`/`get_lpar_num()`, the `html/.X` markers, and which fork fixes are in place |
+| `03-config/` | `*.cfg`, `hosts.json` — **every secret removed** |
+| `04-json-integridade.txt` | every `.json` under `data/`, `etc/`, `tmp/` that is empty or will not decode, with block-aligned sizes flagged as interrupted writes |
+| `05-logs/` | the tail of each log, plus a frequency count of error kinds |
+| `06-permissoes.txt` | owner and mode of what matters, the web user's groups, SELinux |
+| `07-rrd.txt` | RRD count per platform, zero-byte RRDs, RRDs stale for more than two days |
+| `10`, `11` | cron, running processes, Perl modules, rrdtool, web server, disk |
+
+**Redaction is unconditional.** Any `hosts.json` key whose name contains
+`pass`/`secret`/`token`/`key`/`cred` is replaced by `<REMOVIDO:N bytes>`;
+config and log lines with those terms, `Authorization:` headers, curl `-u`
+credentials and `user = "..."` strings are masked. `REDACAO.txt` counts the
+substitutions per file. Verified against three vectors — the cleartext
+password, its `hosts.json` obfuscation (base64 of uuencode, which is
+reversible), and a base64 `Authorization` header — none survives. Diagnostic
+lines are left intact: URLs, `ORA-` codes, file paths and parse errors are not
+touched.
+
+`-a` additionally maps hostnames and IPs to stable labels (`host001`, `ip001`)
+and writes the translation table **outside** the bundle. It makes the
+diagnosis harder, so it is off by default.
+
+The bundle still carries hostnames, IP addresses and instance names. It is
+internal material: it is not for a public repository.
+
