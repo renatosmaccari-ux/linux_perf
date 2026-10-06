@@ -20,14 +20,22 @@ LOG="$INPUTDIR/logs/topology.log"
 # python3 only: the builder reads files with an explicit encoding. The
 # inventory extractor still runs on 2.7, but there is no point splitting them.
 PY=""
-for c in python3 /usr/bin/python3 /opt/freeware/bin/python3 python; do
+# TOPO_PY permite apontar um python3 fora do PATH (SCL, /opt, ...): basta
+# defini-la em etc/.magic, que o load.sh carrega.
+for c in ${TOPO_PY:-} python3 /usr/bin/python3 /opt/freeware/bin/python3 \
+         /opt/rh/rh-python36/root/usr/bin/python3 python; do
   if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys;sys.exit(0 if sys.version_info[0]>=3 else 1)' 2>/dev/null; then
     PY=$c
     break
   fi
 done
 if [ -z "$PY" ]; then
-  echo "topology: no python3 found, dependency map not rebuilt" | tee -a "$LOG"
+  # visivel no load.out, nao so no log da topologia: sem isto o grafo fica
+  # vazio e nada na tela diz por que
+  echo "topology: nenhum python3 encontrado - o mapa de dependencias NAO foi"
+  echo "topology: montado e continuara vazio. Instale python3 (yum install -y"
+  echo "topology: python3) ou aponte TOPO_PY=/caminho/python3 em etc/.magic"
+  echo "topology: nenhum python3 encontrado, mapa nao reconstruido" >> "$LOG"
   exit 0            # never fail the collection cycle over this
 fi
 

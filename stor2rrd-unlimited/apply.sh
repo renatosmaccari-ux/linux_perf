@@ -990,6 +990,8 @@ if [ "$VENDORFIX" -eq 1 ]; then
     "lista e tira do caminho JSON truncado em data/"
   instala_ferramenta "escalona-cron.sh" \
     "espalha os coletores pelos minutos, para nao gravarem todos de uma vez"
+  instala_ferramenta "verifica-topologia.sh" \
+    "diz o que da pagina Topologia falta e por que o grafo pode estar vazio"
 fi
 
 if [ "$ADDTOPO" -eq 1 ]; then
