@@ -213,11 +213,25 @@ for c in "$INPUTDIR/data/data.db" \
   ok "$c${n:+  ($n itens)}"
 done
 if [ "$ACHOU_DB" -eq 0 ]; then
-  aviso "nenhum data.db - o grafo so tera o que vem de CONFIG.json (Power)"
-  echo "         Este banco e o inventario normalizado dos produtos. No 8.x ele"
-  echo "         e populado quando a integracao com o Xormon esta ativa."
+  aviso "nenhum data.db (so existe com a integracao Xormon ativa)"
+  echo "         Nao e impeditivo: as plataformas sao lidas de data/ abaixo."
   echo "         Se existir noutro caminho:  TOPO_DB=/caminho/data.db em etc/.magic"
 fi
+
+# o inventario que cada coletor grava em data/<Plataforma>/ - a fonte de oVirt,
+# Nutanix, Proxmox, Kubernetes, OpenShift, FusionCompute, Cloudstack, OracleVM
+NPLAT=0
+for rel in oVirt/metadata.json NUTANIX/conf.json Proxmox/conf.json \
+           Kubernetes/conf.json Openshift/conf.json FusionCompute/conf.json \
+           Cloudstack/conf.json OracleVM/conf.json Docker/conf.json \
+           AWS/conf.json Azure/conf.json GCloud/conf.json; do
+  f="$INPUTDIR/data/$rel"
+  [ -f "$f" ] || continue
+  NPLAT=$((NPLAT+1))
+  n=$(tr -d ' \n' < "$f" | grep -o '"labels"' >/dev/null 2>&1 && echo sim || echo nao)
+  ok "data/$rel ($(wc -c < "$f") bytes, labels=$n)"
+done
+[ "$NPLAT" -eq 0 ] && aviso "nenhum inventario de plataforma em data/ - so Power no grafo"
 INV="$INPUTDIR/topology/facts/inventory.csv"
 [ -f "$INV" ] && ok "facts/inventory.csv: $(( $(wc -l < "$INV") - 1 )) linha(s)" \
               || aviso "facts/inventory.csv ausente"

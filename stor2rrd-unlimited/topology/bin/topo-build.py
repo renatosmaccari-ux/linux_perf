@@ -43,6 +43,12 @@ _spec = _u.spec_from_file_location(
 leitor_db = _u.module_from_spec(_spec)
 _spec.loader.exec_module(leitor_db)
 
+_spec_a = _u.spec_from_file_location(
+    "topo_arvore", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "topo-arvore.py"))
+leitor_arvore = _u.module_from_spec(_spec_a)
+_spec_a.loader.exec_module(leitor_arvore)
+
 
 def bancos(base):
     """Where the products keep their normalised inventory. base is
@@ -78,17 +84,14 @@ def bancos(base):
             rotulo = "stor2rrd" if "stor2rrd" in home.lower() else "lpar2rrd"
             vistos.append((real, rotulo))
 
-    if not vistos:
-        # silencio aqui era o pior caso: "0 itens do inventario" sem dizer que
-        # nenhum banco sequer foi encontrado
-        sys.stderr.write(
-            "topo-build: nenhum data.db encontrado. Procurei em:\n")
-        for caminho, _ in candidatos:
-            sys.stderr.write("topo-build:   %s\n" % caminho)
-        sys.stderr.write(
-            "topo-build: sem ele o grafo traz so o que vem de CONFIG.json "
-            "(Power). Aponte com TOPO_DB=/caminho/data.db\n")
+    # os caminhos tentados ficam guardados: so viram mensagem se nada mais
+    # alimentar o grafo, senao seriam ruido a cada coleta
+    global TENTADOS
+    TENTADOS = [c for c, _ in candidatos]
     return vistos
+
+
+TENTADOS = []
 
 PORTA_EFEMERA = 32768           # acima disso, origem quase sempre e cliente
 IP_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
@@ -645,6 +648,41 @@ def carrega_banco(g, caminho, rotulo):
     return len(guardados), arestas
 
 
+def carrega_arvore(g, dir_data):
+    """O inventario que os coletores gravam em data/<Plataforma>/, sem banco.
+
+    data.db so existe com a integracao Xormon ligada; estes arquivos existem em
+    qualquer instalacao, e sao a unica fonte de oVirt, Nutanix, Proxmox,
+    Kubernetes, OpenShift, FusionCompute, Cloudstack e OracleVM."""
+    dados = leitor_arvore.ler_tudo(dir_data)
+    for caminho, erro in dados["erros"]:
+        sys.stderr.write("topo-build: %s: %s\n" % (caminho, erro))
+
+    itens = dados["itens"]
+    if not itens:
+        return 0, 0, []
+
+    guardados = {}
+    for uuid, it in itens.items():
+        n = g.no(it["label"], it["label"])
+        if n is None:
+            continue
+        guardados[uuid] = norm_host(n["id"])
+        n["col"] = True                 # veio de coleta, nao de planilha
+        g.define(n, "plat", it["plataforma"])
+
+    arestas = 0
+    for pai, filho in dados["relacoes"]:
+        if pai in guardados and filho in guardados and pai != filho:
+            plat = itens[pai]["plataforma"]     # nao reaproveitar it: o laco
+                                                 # anterior deixou o ultimo item
+            g.aresta(itens[pai]["label"], itens[filho]["label"], [],
+                     plat, plat)
+            arestas += 1
+
+    return len(guardados), arestas, dados["plataformas"]
+
+
 # ==================================================================== main
 def main():
     if len(sys.argv) != 3:
@@ -666,6 +704,10 @@ def main():
         n_db += i
         a_db += a
 
+    # o inventario que os coletores gravam em data/, que nao depende de banco
+    n_arv, a_arv, plats = carrega_arvore(
+        g, os.path.join(os.path.dirname(os.path.abspath(base)), "data"))
+
     n_bas = carrega_baseline(g, os.path.join(base, "uploads"))
     n_inv = carrega_inventario(g, os.path.join(base, "facts", "inventory.csv"),
                                serial_lparid)
@@ -678,9 +720,22 @@ def main():
         json.dump(dados, f, ensure_ascii=False, separators=(",", ":"))
     os.rename(tmp, saida)
 
+    if not (n_db or n_arv or n_inv or n_con or n_bas):
+        sys.stderr.write("topo-build: nenhuma fonte de dados encontrada.\n")
+        sys.stderr.write("topo-build: data.db procurado em:\n")
+        for c in TENTADOS:
+            sys.stderr.write("topo-build:   %s\n" % c)
+        sys.stderr.write("topo-build: inventario das plataformas procurado em "
+                         "data/<Plataforma>/conf.json e data/oVirt/"
+                         "metadata.json\n")
+
+    if plats:
+        print("topo-build: plataformas em data/: "
+              + ", ".join("%s=%d" % (p, n) for p, n in plats))
     print("topo-build: %d itens do inventario dos produtos (%d ligacoes), "
+          "%d de data/ (%d ligacoes), "
           "%d LPAR do Power, %d hosts coletados, %d linhas de baseline"
-          % (n_db, a_db, n_inv, n_con, n_bas))
+          % (n_db, a_db, n_arv, a_arv, n_inv, n_con, n_bas))
     print("topo-build: %d nos, %d ligacoes -> %s"
           % (len(dados["nodes"]), len(dados["links"]), saida))
     return 0
