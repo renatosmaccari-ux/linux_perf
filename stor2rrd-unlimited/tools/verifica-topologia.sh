@@ -189,6 +189,40 @@ if [ -d "$INPUTDIR/topology" ]; then
 fi
 
 echo
+echo "-- fontes de dados do grafo --"
+# CONFIG.json alimenta o Power; data.db alimenta VMware, Nutanix, OracleDB e
+# todo o STOR2RRD. Sem o segundo o grafo fica so com os LPAR.
+NCFG=$(find "$INPUTDIR/data" -maxdepth 3 -name CONFIG.json 2>/dev/null | wc -l)
+[ "$NCFG" -gt 0 ] && ok "$NCFG CONFIG.json (Power/VIOS)" \
+                  || aviso "nenhum CONFIG.json - sem LPAR no grafo"
+
+ACHOU_DB=0
+for c in "$INPUTDIR/data/data.db" \
+         "$(dirname "$INPUTDIR")/lpar2rrd/data/data.db" \
+         "$(dirname "$INPUTDIR")/stor2rrd/data/data.db" \
+         /home/lpar2rrd/lpar2rrd/data/data.db \
+         /home/stor2rrd/stor2rrd/data/data.db; do
+  [ -f "$c" ] || continue
+  case " $VISTOS " in *" $c "*) continue ;; esac
+  VISTOS="${VISTOS:-} $c"
+  ACHOU_DB=$((ACHOU_DB+1))
+  n=""
+  command -v sqlite3 >/dev/null 2>&1 && \
+    n=$(sqlite3 "file:$c?mode=ro" "SELECT count(*) FROM object_items" 2>/dev/null ||
+        sqlite3 "file:$c?mode=ro" "SELECT count(*) FROM objects" 2>/dev/null)
+  ok "$c${n:+  ($n itens)}"
+done
+if [ "$ACHOU_DB" -eq 0 ]; then
+  aviso "nenhum data.db - o grafo so tera o que vem de CONFIG.json (Power)"
+  echo "         Este banco e o inventario normalizado dos produtos. No 8.x ele"
+  echo "         e populado quando a integracao com o Xormon esta ativa."
+  echo "         Se existir noutro caminho:  TOPO_DB=/caminho/data.db em etc/.magic"
+fi
+INV="$INPUTDIR/topology/facts/inventory.csv"
+[ -f "$INV" ] && ok "facts/inventory.csv: $(( $(wc -l < "$INV") - 1 )) linha(s)" \
+              || aviso "facts/inventory.csv ausente"
+
+echo
 echo "-- ultima execucao --"
 L="$INPUTDIR/logs/topology.log"
 if [ -f "$L" ]; then

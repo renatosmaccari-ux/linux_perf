@@ -147,17 +147,31 @@ def ler(caminho):
                 cur.execute("SELECT hw_type, %s FROM hw_types" % col)
                 rotulos_hw = dict((r[0], r[1]) for r in cur.fetchall())
 
-        campos = ["item_id", "label", "hw_type", "subsystem"]
+        # A coluna de rotulo tem nome diferente em cada produto: label no
+        # LPAR2RRD, hw_label no STOR2RRD. Pedir "label" fixo fazia a leitura de
+        # um banco do STOR2RRD morrer inteira com "no such column: label", de
+        # modo que nenhum storage entrava no grafo.
+        col_rot = "label" if "label" in cols else (
+            "hw_label" if "hw_label" in cols else "")
+        campos = ["item_id"]
+        campos += [c for c in (col_rot, "hw_type", "subsystem") if c]
         campos += [c for c in ("object_id", "item_timestamp") if c in cols]
         cur.execute("SELECT %s FROM %s" % (", ".join(campos), tab_itens))
+
+        def pega(linha, nome):
+            try:
+                return linha[nome]
+            except (IndexError, KeyError):
+                return None
+
         itens = {}
         for r in cur.fetchall():
-            sub = r["subsystem"] or ""
+            sub = pega(r, "subsystem") or ""
             itens[r["item_id"]] = {
                 "id": r["item_id"],
-                "label": r["label"] or r["item_id"],
-                "hw_type": r["hw_type"] or "",
-                "hw_label": rotulos_hw.get(r["hw_type"] or "", ""),
+                "label": (pega(r, col_rot) if col_rot else None) or r["item_id"],
+                "hw_type": pega(r, "hw_type") or "",
+                "hw_label": rotulos_hw.get(pega(r, "hw_type") or "", ""),
                 "subsystem": sub,
                 "classe": classe(sub),
                 "object_id": r["object_id"] if "object_id" in campos else "",

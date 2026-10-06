@@ -747,7 +747,7 @@ SHIM
     doc=$(grep '^T:doc:' "$md" | head -1)
     if [ -n "$doc" ]; then
       grep -q '^T:topo:' "$md" || printf '%s\n' "$doc" \
-        | sed 's|^T:doc:[^:]*:[^:]*:|T:topo:Mapa de dependencias:topologia.html:|' >> "$md"
+        | sed 's|^T:doc:[^:]*:[^:]*:|T:topo:Topologia:topologia.html:|' >> "$md"
       # ":" is the field separator; genjson.pl decodes ===double-col=== back
       # to a colon (sub collons). A raw colon here would split the label.
       grep -q '^T:topodata:' "$md" || printf '%s\n' "$doc" \
@@ -776,10 +776,10 @@ SHIM
                       my ( $all, $indent, $rest ) = ( $1, $2, $3 );
                       my $redir = $rest =~ /MENU_OUT/ ? qq( >> "\$MENU_OUT") : "";
                       $all . $indent
-                        . qq(menu "\$type_tmenu" "topo" "Mapa de dependencias" "topologia.html")
+                        . qq(menu "\$type_tmenu" "topo" "Topologia" "topologia.html")
                         . $redir . qq(   # xoruxfork topology\n)
                         . $indent
-                        . qq(menu "\$type_tmenu" "topodata" "Topologia: dados" "/$cgi/topology.sh")
+                        . qq(menu "\$type_tmenu" "topodata" "Topologia: importar dados" "/$cgi/topology.sh")
                         . $redir . qq(   # xoruxfork topology\n);
                     }e;
     die "apply.sh: could not register the pages (copy=$copied menu=$linked)\n"

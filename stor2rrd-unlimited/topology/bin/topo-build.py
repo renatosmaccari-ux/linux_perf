@@ -46,20 +46,48 @@ _spec.loader.exec_module(leitor_db)
 
 def bancos(base):
     """Where the products keep their normalised inventory. base is
-    $INPUTDIR/topology, so the product's own data/ is one level up; a second
-    product installed beside it is two levels up."""
+    $INPUTDIR/topology.
+
+    The two products are not always siblings: a common layout is
+    /home/lpar2rrd/lpar2rrd beside /home/stor2rrd/stor2rrd, where neither is
+    under the other's parent. Looking only next to ourselves found the local
+    product and silently missed the other one. TOPO_DB overrides the search
+    with an explicit colon-separated list."""
     raiz = os.path.dirname(os.path.abspath(base))
-    vistos = []
-    candidatos = [(os.path.join(raiz, "data", "data.db"), raiz)]
     pai = os.path.dirname(raiz)
-    for irmao in ("lpar2rrd", "stor2rrd"):
-        candidatos.append((os.path.join(pai, irmao, "data", "data.db"),
-                           os.path.join(pai, irmao)))
+    candidatos = []
+
+    for caminho in filter(None, os.environ.get("TOPO_DB", "").split(":")):
+        candidatos.append((caminho, caminho))
+
+    candidatos.append((os.path.join(raiz, "data", "data.db"), raiz))
+    for prod in ("lpar2rrd", "stor2rrd"):
+        # irmao: /home/x/lpar2rrd e /home/x/stor2rrd
+        candidatos.append((os.path.join(pai, prod, "data", "data.db"),
+                           os.path.join(pai, prod)))
+        # cada produto na propria home: /home/stor2rrd/stor2rrd
+        for lar in ("/home", os.path.dirname(pai) or "/home"):
+            candidatos.append(
+                (os.path.join(lar, prod, prod, "data", "data.db"),
+                 os.path.join(lar, prod, prod)))
+
+    vistos = []
     for caminho, home in candidatos:
         real = os.path.realpath(caminho)
         if os.path.isfile(real) and real not in [v[0] for v in vistos]:
             rotulo = "stor2rrd" if "stor2rrd" in home.lower() else "lpar2rrd"
             vistos.append((real, rotulo))
+
+    if not vistos:
+        # silencio aqui era o pior caso: "0 itens do inventario" sem dizer que
+        # nenhum banco sequer foi encontrado
+        sys.stderr.write(
+            "topo-build: nenhum data.db encontrado. Procurei em:\n")
+        for caminho, _ in candidatos:
+            sys.stderr.write("topo-build:   %s\n" % caminho)
+        sys.stderr.write(
+            "topo-build: sem ele o grafo traz so o que vem de CONFIG.json "
+            "(Power). Aponte com TOPO_DB=/caminho/data.db\n")
     return vistos
 
 PORTA_EFEMERA = 32768           # acima disso, origem quase sempre e cliente
