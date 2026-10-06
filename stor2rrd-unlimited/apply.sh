@@ -665,6 +665,40 @@ vendorfix_hostsjson() {
   echo "  fixed   : ${f#$S2R/} (a bad save no longer empties hosts.json)"
 }
 
+# O painel de ferramentas da direita (Platform, Database, ... Utilities) e
+# estatico dentro de html/index.html: nao vem de tmp/menu.txt. Registrar so no
+# menu.txt deixava a pagina publicada e alcancavel pela URL, mas sem nenhum
+# lugar na interface por onde chegar nela - que foi exatamente o que aconteceu.
+registra_index() {
+  f="$S2R/html/index.html"
+  [ -f "$f" ] || return 0
+  grep -q 'xoruxfork topology' "$f" && return 0          # already registered
+  corpo="$SELF_DIR/patches/topologia-index-menu.html"
+  [ -f "$corpo" ] || { echo "apply.sh: patches/topologia-index-menu.html missing" >&2; return 0; }
+  grep -q 'data-abbr="logs"' "$f" || {
+    echo "apply.sh: Utilities block not found in html/index.html, skipping" >&2
+    return 0; }
+
+  [ -f "$f.xoruxfork-orig" ] || cp -p "$f" "$f.xoruxfork-orig"
+  cgi=$(basename "$CGIDIR")
+  # A classe do <li> difere entre os produtos ("nobfu msublevel" no LPAR2RRD,
+  # so "nobfu" no STOR2RRD), entao a ancora e o link do Log e as entradas novas
+  # herdam a classe e a indentacao que estiverem la.
+  CORPO="$corpo" CGI="$cgi" perl -0777 -i -pe '
+    BEGIN { local $/; open my $h, "<", $ENV{CORPO} or die; $modelo = <$h>;
+            $modelo =~ s{/CGIDIR/}{/$ENV{CGI}/}g }
+    s{(^([ \t]*)<li\s+class="([^"]*)"[^>]*>(?:(?!</li>).)*?href="gui-log\.html".*?</li>\n)}{
+        my ($linha, $indent, $classe) = ($1, $2, $3);
+        my $novo = $modelo;
+        $novo =~ s/^\t/$indent/mg;
+        $novo =~ s/class="nobfu msublevel"/class="$classe"/g;
+        $linha . $novo;
+    }mse
+      or die "apply.sh: Log entry not found in html/index.html\n";
+  ' "$f" || { mv "$f.xoruxfork-orig" "$f"; return 1; }
+  echo "  registered: html/index.html (Topologia em Utilities)"
+}
+
 # -------------------------------------------------------------- topology page
 # A static page is not enough on its own: the installer copies a fixed list of
 # files from html/ into the web directory and regenerates tmp/menu.txt from
@@ -997,6 +1031,7 @@ fi
 if [ "$ADDTOPO" -eq 1 ]; then
   echo "Installing the dependency-map page"
   add_topology
+  registra_index
 fi
 
 if [ "$FIXPERMS" -eq 1 ]; then

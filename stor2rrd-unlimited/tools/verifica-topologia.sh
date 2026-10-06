@@ -157,6 +157,19 @@ if [ -f "$M" ]; then
 else
   aviso "tmp/menu.txt ausente - sera gerado no proximo load.sh"
 fi
+# O painel de ferramentas da direita (Utilities) e estatico no index.html, nao
+# vem do menu.txt: registrar so no menu.txt deixa a pagina sem porta de entrada.
+for d in "$INPUTDIR/html" "$INPUTDIR/www" "${WEBDIR:-}"; do
+  [ -n "$d" ] && [ -f "$d/index.html" ] || continue
+  if grep -q 'xoruxfork topology' "$d/index.html"; then
+    ok "$(basename "$d")/index.html tem Topologia em Utilities"
+  else
+    falta "$(basename "$d")/index.html SEM a entrada em Utilities"
+    echo "          E por aqui que se chega ao grafo. Reinstale o pacote e"
+    echo "          rode ./load.sh, que recopia o index.html para o WEBDIR."
+  fi
+done
+
 I="$INPUTDIR/bin/install-html.sh"
 [ -f "$I" ] && { grep -q "xoruxfork topology" "$I" && ok "install-html.sh registra a pagina" \
                                                    || falta "install-html.sh sem o registro da pagina"; }
