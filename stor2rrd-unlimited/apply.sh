@@ -271,6 +271,27 @@ vendorfix_mainjs() {
     die "apply.sh: cmd=json callback not found in main.js\n" unless $n == 1;
   ' "$f" || { mv "$f.xoruxfork-orig" "$f"; return 1; }
 
+  # Um registro OracleDB incompleto fazia val.hosts[0] lancar TypeError no
+  # meio do $.each das aliases, abortando o mesmo callback - com o agravante
+  # de ser excecao sincrona, que o .fail() acima nao pega.
+  # So o main.js do LPAR2RRD tem o bloco OracleDB; no do STOR2RRD a ausencia
+  # e normal e nao pode fazer o patch anterior ser revertido.
+  corpo2="$SELF_DIR/patches/oracledb-host-undefined.js"
+  if [ -f "$corpo2" ] \
+     && grep -q 'val.host = val.hosts\[0\];' "$f" \
+     && ! grep -q 'xoruxfork: val.hosts pode nao existir' "$f"; then
+    CORPO2="$corpo2" perl -0777 -i -pe '
+      BEGIN { local $/; open my $fh, "<", $ENV{CORPO2} or die; $novo = <$fh> }
+      my $anc = "\t\t\t\t\tif (! val.host ) {\n"
+              . "\t\t\t\t\t\tval.host = val.hosts[0];\n"
+              . "\t\t\t\t\t}\n";
+      my $n = s/\Q$anc\E/$novo/;
+      die "apply.sh: val.hosts[0] guard point not found in main.js\n" unless $n == 1;
+    ' "$f" || echo "apply.sh: nao foi possivel proteger val.hosts[0] em ${f#$S2R/}" >&2
+    grep -q 'xoruxfork: val.hosts pode nao existir' "$f" \
+      && echo "  fixed   : ${f#$S2R/} (um registro OracleDB incompleto nao derruba mais a pagina)"
+  fi
+
   echo "  fixed   : ${f#$S2R/} (a failed cmd=json now says so instead of killing every button)"
 }
 
