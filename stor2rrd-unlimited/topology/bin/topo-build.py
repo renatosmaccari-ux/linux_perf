@@ -388,8 +388,11 @@ def linhas_planilha(caminho):
     try:
         import openpyxl
     except ImportError:
-        sys.stderr.write("topo-build: openpyxl ausente, %s ignorado\n"
-                         % os.path.basename(caminho))
+        # Sem openpyxl, le-se o .xlsx com a biblioteca padrao: e um zip de XML.
+        # A alternativa era ignorar a planilha, que e exatamente o inventario
+        # que o usuario quis importar.
+        for reg in _xlsx_sem_openpyxl(caminho):
+            yield reg
         return
     wb = openpyxl.load_workbook(caminho, read_only=True, data_only=True)
     for aba in wb.sheetnames:
@@ -409,6 +412,77 @@ def linhas_planilha(caminho):
                    if cabecalho[i]}
 
 
+def _xlsx_sem_openpyxl(caminho):
+    """Le um .xlsx sem dependencia externa.
+
+    O formato e um zip: xl/worksheets/sheetN.xml traz as celulas e
+    xl/sharedStrings.xml a tabela de textos. Celulas com t="s" guardam o
+    indice nessa tabela; as demais trazem o valor direto em <v>. Celulas
+    vazias sao omitidas, por isso a coluna vem da referencia (A1, B1, ...)
+    e nao da ordem de aparicao."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+
+    NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+
+    def col_para_indice(ref):
+        letras = "".join(c for c in ref if c.isalpha())
+        n = 0
+        for c in letras:
+            n = n * 26 + (ord(c.upper()) - 64)
+        return n - 1
+
+    try:
+        z = zipfile.ZipFile(caminho)
+    except (zipfile.BadZipFile, IOError) as e:
+        sys.stderr.write("topo-build: %s nao abre como xlsx (%s)\n"
+                         % (os.path.basename(caminho), e))
+        return
+
+    with z:
+        textos = []
+        if "xl/sharedStrings.xml" in z.namelist():
+            raiz = ET.fromstring(z.read("xl/sharedStrings.xml"))
+            for si in raiz.findall(NS + "si"):
+                # o texto pode vir partido em varios <t> por formatacao
+                textos.append("".join(t.text or "" for t in si.iter(NS + "t")))
+
+        folhas = sorted(n for n in z.namelist()
+                        if n.startswith("xl/worksheets/sheet") and n.endswith(".xml"))
+        for folha in folhas:
+            raiz = ET.fromstring(z.read(folha))
+            cabecalho = None
+            for linha in raiz.iter(NS + "row"):
+                valores = {}
+                largura = 0
+                for c in linha.findall(NS + "c"):
+                    i = col_para_indice(c.get("r") or "")
+                    if i < 0:
+                        continue
+                    largura = max(largura, i + 1)
+                    v = c.find(NS + "v")
+                    if c.get("t") == "s":
+                        if v is not None and v.text is not None:
+                            try:
+                                valores[i] = textos[int(v.text)]
+                            except (ValueError, IndexError):
+                                valores[i] = ""
+                    elif c.get("t") == "inlineStr":
+                        valores[i] = "".join(t.text or "" for t in c.iter(NS + "t"))
+                    elif v is not None:
+                        valores[i] = v.text or ""
+                celulas = [valores.get(i, "") for i in range(largura)]
+
+                if cabecalho is None:
+                    textos_linha = [x for x in celulas if str(x).strip()]
+                    if len(textos_linha) >= 3:
+                        cabecalho = [norm_col(str(x)) for x in celulas]
+                    continue
+                yield {cabecalho[i]: celulas[i]
+                       for i in range(min(len(cabecalho), len(celulas)))
+                       if cabecalho[i]}
+
+
 def coluna(reg, campo):
     for nome in COLUNAS[campo]:
         if nome in reg and reg[nome] not in (None, ""):
@@ -416,12 +490,38 @@ def coluna(reg, campo):
     return ""
 
 
-def carrega_baseline(g, diretorio):
-    arquivos = sorted(glob.glob(os.path.join(diretorio, "*")))
+def separa_uploads(diretorio):
+    """-> (inventarios, coletas). Um CSV de coleta subido pela tela de
+    importacao ia inteiro para o baseline: cada linha virava um no, e os
+    arquivos agregados do kit tem centenas de milhares de linhas. Agora cada
+    um vai para o leitor que entende o seu formato."""
+    inventarios, coletas, recusados = [], [], []
+    for caminho in sorted(glob.glob(os.path.join(diretorio, "*"))):
+        baixo = caminho.lower()
+        if baixo.endswith((".xls", ".xlsx")):
+            inventarios.append(caminho)      # planilha: so pode ser inventario
+            continue
+        if not baixo.endswith((".csv", ".txt")):
+            continue
+        tipo, _ = classifica_csv(caminho)
+        if tipo == "fatos":
+            coletas.append(caminho)
+        elif tipo == "inventario":
+            inventarios.append(caminho)
+        else:
+            recusados.append(caminho)
+    for caminho in recusados:
+        sys.stderr.write(
+            "topo-build: %s ignorado: o cabecalho nao e de inventario "
+            "(hostname/host/nome mais uma coluna como os, site, funcao) "
+            "nem de coleta (termina em categoria,item,chave,valor)\n"
+            % os.path.basename(caminho))
+    return inventarios, coletas
+
+
+def carrega_baseline(g, arquivos):
     lidos = 0
     for caminho in arquivos:
-        if not caminho.lower().endswith((".csv", ".txt", ".xls", ".xlsx")):
-            continue
         try:
             registros = list(linhas_planilha(caminho))
         except Exception as e:                       # planilha malformada
@@ -453,16 +553,83 @@ def carrega_baseline(g, diretorio):
 # O kit emite CSV de 4 colunas: categoria,escopo,chave,valor. Tudo em
 # facts/ e lido, nao so as conexoes: 01_sistema traz o serial do frame e o
 # lpar_id, que juntos sao o casamento mais forte com o inventario do produto.
-def carrega_fatos(g, base):
+# Tres formatos de coleta convivem, e so um traz o host no nome do arquivo:
+#
+#   <host>_categoria.csv   categoria,item,chave,valor                (4 colunas)
+#   NN_categoria.csv       hostname,categoria,item,chave,valor       (5 colunas)
+#   00_consolidado.csv     origem,hostname,categoria,item,chave,valor (6 colunas)
+#
+# O kit agrega varios hosts num arquivo so e prefixa a coluna hostname; ler
+# apenas o formato de 4 colunas deixava esses arquivos sem host nenhum.
+CAB_FATOS = ("categoria", "item", "chave", "valor")
+
+
+def classifica_csv(caminho):
+    """-> ("fatos", indice_da_coluna_host) | ("inventario", None) | (None, None)"""
+    try:
+        with open(caminho, encoding="utf-8", errors="replace") as fh:
+            cab = next(csv.reader(fh), [])
+    except (IOError, OSError, StopIteration):
+        return (None, None)
+    nomes = [c.strip().lower() for c in cab]
+
+    # coleta: o cabecalho termina nas quatro colunas de fato
+    if len(nomes) >= 4 and tuple(nomes[-4:]) == CAB_FATOS:
+        if "hostname" in nomes[:-4]:
+            return ("fatos", nomes.index("hostname"))
+        return ("fatos", None)          # host vem do nome do arquivo
+
+    # inventario: precisa de uma coluna de identificacao e de ao menos uma
+    # outra coluna de inventario, senao qualquer CSV viraria nos soltos
+    def tem(campo):
+        return any(n in COLUNAS[campo] for n in nomes)
+
+    if tem("id") and any(tem(c) for c in ("os", "loc", "amb", "fn", "chs", "mod", "ips")):
+        return ("inventario", None)
+    return (None, None)
+
+
+def carrega_fatos(g, base, extras=None):
     raiz = os.path.join(base, "facts")
     arquivos = sorted(glob.glob(os.path.join(raiz, "*.csv"))
                       + glob.glob(os.path.join(raiz, "*", "*.csv")))
+    arquivos += list(extras or [])
+
+    # arquivos agregados trazem varios hosts; sao lidos a parte, porque o host
+    # vem de dentro da linha e nao do nome
+    agregados = []
     por_host = defaultdict(list)
     for caminho in arquivos:
         if os.path.basename(caminho) == "inventory.csv":
             continue
+        tipo, idx = classifica_csv(caminho)
+        if tipo == "fatos" and idx is not None:
+            agregados.append((caminho, idx))
+            continue
         por_host[nome_do_host(caminho)].append(caminho)
     por_host.pop("", None)
+
+    # desdobra cada agregado em linhas por host, no mesmo formato de 4 campos
+    linhas_por_host = defaultdict(list)
+    for caminho, idx in agregados:
+        try:
+            fh = open(caminho, encoding="utf-8", errors="replace")
+        except IOError as e:
+            sys.stderr.write("topo-build: %s ilegivel (%s)\n"
+                             % (os.path.basename(caminho), e))
+            continue
+        with fh:
+            leitor = csv.reader(fh)
+            next(leitor, None)                      # cabecalho
+            for campos in leitor:
+                if len(campos) <= idx + 4:
+                    continue
+                host = campos[idx].strip()
+                if not host:
+                    continue
+                linhas_por_host[host].append(campos[idx + 1:])
+    for host in linhas_por_host:
+        por_host.setdefault(host, [])
 
     serial_lparid = {}          # (serial, lpar_id) -> id normalizado, para casar()
     for host, caminhos in sorted(por_host.items()):
@@ -471,6 +638,8 @@ def carrega_fatos(g, base):
         portas_listen = []
         serial = lpar_id = ""
 
+        # cada arquivo por host, mais as linhas que vieram dos agregados
+        fontes = []
         for caminho in caminhos:
             try:
                 fh = open(caminho, encoding="utf-8", errors="replace")
@@ -479,7 +648,13 @@ def carrega_fatos(g, base):
                                  % (os.path.basename(caminho), e))
                 continue
             with fh:
-                for campos in csv.reader(fh):
+                fontes.append(list(csv.reader(fh)))
+        if linhas_por_host.get(host):
+            fontes.append(linhas_por_host[host])
+
+        for bloco in fontes:
+            if bloco:
+                for campos in bloco:
                     if len(campos) < 4:
                         continue
                     # lib.sh cita valores com virgula, mas um CSV montado a
@@ -694,7 +869,10 @@ def main():
     # A ordem importa: o inventario casa contra nos que ja existem, entao vem
     # por ultimo. Como o primeiro valor nao vazio vence, os coletores mandam
     # em plataforma e SO, e o baseline preenche o que ninguem observou.
-    n_con, serial_lparid = carrega_fatos(g, base)
+    # o que foi subido pela tela de importacao, cada um para o seu leitor
+    inventarios, coletas = separa_uploads(os.path.join(base, "uploads"))
+
+    n_con, serial_lparid = carrega_fatos(g, base, coletas)
 
     # o inventario normalizado dos dois produtos, se estiverem instalados lado
     # a lado ou se este for um deles
@@ -708,7 +886,7 @@ def main():
     n_arv, a_arv, plats = carrega_arvore(
         g, os.path.join(os.path.dirname(os.path.abspath(base)), "data"))
 
-    n_bas = carrega_baseline(g, os.path.join(base, "uploads"))
+    n_bas = carrega_baseline(g, inventarios)
     n_inv = carrega_inventario(g, os.path.join(base, "facts", "inventory.csv"),
                                serial_lparid)
 
