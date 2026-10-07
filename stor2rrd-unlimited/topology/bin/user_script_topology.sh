@@ -61,10 +61,27 @@ mkdir -p "$TOPO/facts/conexoes" "$TOPO/uploads" 2>/dev/null
   "$PY" "$TOPO/bin/topo-build.py" "$TOPO" "$TOPO/topologia.json" 2>&1
 } >> "$LOG" 2>&1
 
-# publish only a graph that parsed, so a failed run leaves the last good map
-if [ -s "$TOPO/topologia.json" ] && \
-   "$PY" -c 'import json,sys; json.load(open(sys.argv[1]))' "$TOPO/topologia.json" 2>/dev/null
-then
+# Publica so um grafo que fez o parse, para uma execucao falha deixar o ultimo
+# mapa bom. O motivo da recusa ia para /dev/null, e "build produced no valid
+# JSON" nao distingue um JSON corrompido de um arquivo que nao pode ser lido,
+# nem de um que nem chegou a ser gravado.
+erro_json=""
+if [ ! -f "$TOPO/topologia.json" ]; then
+  erro_json="$TOPO/topologia.json nao existe - o build nao chegou a grava-lo"
+elif [ ! -s "$TOPO/topologia.json" ]; then
+  erro_json="$TOPO/topologia.json esta vazio"
+else
+  # so a mensagem, nao o traceback: a primeira linha de um traceback e
+  # "Traceback (most recent call last):", que nao diz nada
+  erro_json=$("$PY" -c 'import json, sys
+try:
+    json.load(open(sys.argv[1]))
+except Exception as e:
+    sys.stderr.write("%s: %s" % (type(e).__name__, e))
+' "$TOPO/topologia.json" 2>&1 >/dev/null)
+fi
+
+if [ -z "$erro_json" ]; then
   # A pagina busca topologia.json relativo a sua propria URL, ou seja, do
   # diretorio web - nao de topology/. Se esta copia falhar, o mapa novo existe
   # mas ninguem o ve.
@@ -101,7 +118,10 @@ then
     echo "$(date '+%Y-%m-%d %H:%M:%S') topology: mapa publicado em $publicados local(is)" >> "$LOG"
   fi
 else
-  echo "topology: build produced no valid JSON, keeping the previous map" >> "$LOG"
+  echo "topology: o mapa novo nao passou na validacao, mantendo o anterior."
+  echo "topology:   $erro_json"
+  echo "topology: quem rodou isto foi $(id -un)."
+  echo "$(date '+%Y-%m-%d %H:%M:%S') topology: recusado - $erro_json" >> "$LOG"
 fi
 
 exit 0

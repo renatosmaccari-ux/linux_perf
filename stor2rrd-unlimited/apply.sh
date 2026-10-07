@@ -758,6 +758,13 @@ add_topology() {
   if [ -d "$TOPO_KIT" ]; then
     mkdir -p "$S2R/topology/facts/conexoes" "$S2R/topology/uploads"
     cp -Rp "$TOPO_KIT/bin" "$TOPO_KIT/cgi" "$S2R/topology/" 2>/dev/null
+    # A importacao pela GUI roda como o usuario do servidor web e reconstroi o
+    # mapa: topo-inventory.py grava facts/inventory.csv e topo-build.py grava
+    # topologia.json.novo e o renomeia. Sem escrita de grupo nestes tres, o
+    # build morre com PermissionError e a tela nunca muda.
+    for d in "$S2R/topology" "$S2R/topology/facts" "$S2R/topology/uploads"; do
+      [ -d "$d" ] && chmod g+w "$d" 2>/dev/null
+    done
     [ -d "$TOPO_KIT/collectors" ] && cp -Rp "$TOPO_KIT/collectors" "$S2R/topology/"
     chmod +x "$S2R/topology/bin/"*.sh "$S2R/topology/bin/"*.py "$S2R/topology/cgi/"*.sh 2>/dev/null
     [ -f "$S2R/topology/topologia.json" ] || cp -p "$TOPO_SRC/topologia.json" "$S2R/topology/"
