@@ -158,7 +158,20 @@ def main():
             "    A = _r ? _r.clientHeight : innerHeight; }", 1)
         trocas["canvas"] = 1
 
-    # 7. embrulha o corpo e poe o botao
+    # 7. o resumo do grafo dizia so "N ativos", e "ativos" desconta servidores
+    #    de DR, desativados, frames e desligados: nunca coincide com o total de
+    #    nos do arquivo, que e o numero que a pagina de dados mostra. Os dois
+    #    lado a lado tiram a comparacao enganosa.
+    velho = '} ativos (${fmt(q("cloud"))}'
+    if velho in html:
+        html = html.replace(
+            velho,
+            '} ativos de ${fmt(nos.length)} nos (${fmt(q("cloud"))}', 1)
+        trocas["resumo"] = 1
+    elif '} ativos de ${fmt(nos.length)} nos (' not in html:
+        sys.exit("topologia-embutida: resumo do cabecalho nao encontrado")
+
+    # 8. embrulha o corpo e poe o botao
     m = re.search(r"<body[^>]*>\n", html)
     if not m:
         sys.exit("topologia-embutida: <body> nao encontrado")

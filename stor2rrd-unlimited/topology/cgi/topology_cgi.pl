@@ -210,6 +210,25 @@ if ( -r "$topodir/topologia.json" ) {
   }
 }
 
+# O grafo nao le este arquivo: le o topologia.json do diretorio web, para onde
+# o mapa e copiado no fim da reconstrucao. Quando essa copia falha, esta pagina
+# mostra o mapa novo e o grafo continua no antigo - sem nada dizendo por que os
+# numeros nao batem.
+my $publicado_nos = -1;
+my $publicado_quando = "";
+for my $d ( "$basedir/www", "$basedir/html" ) {
+  next unless -r "$d/topologia.json";
+  my @st = stat("$d/topologia.json");
+  $publicado_quando = scalar localtime( $st[9] );
+  if ( open( my $ph, "<", "$d/topologia.json" ) ) {
+    local $/;
+    my $raw = <$ph>;
+    close($ph);
+    $publicado_nos = () = $raw =~ /"id":/g;
+  }
+  last;
+}
+
 print "Content-type: text/html; charset=utf-8\n\n";
 print <<"HEAD";
 <!DOCTYPE html>
@@ -273,6 +292,14 @@ print <<"ESTADO";
   <div style="min-width:220px"><b style="font-size:13px;font-weight:400">@{[ esc($quando) || "nunca construido" ]}</b><span>ultima construcao</span></div>
 </div>
 <p class="nota">O mapa tambem e reconstruido sozinho ao fim de cada ciclo de coleta.</p>
+@{[ $publicado_nos >= 0 && $publicado_nos != $nos
+    ? qq{<div class="msg erro">O grafo esta mostrando um mapa mais antigo: }
+      . qq{$publicado_nos no(s), de $publicado_quando. A copia para o diretorio }
+      . qq{web nao esta funcionando - veja logs/topology.log.</div>}
+    : "" ]}
+<p class="nota">O numero acima e o total de nos do arquivo. O cabecalho do grafo
+mostra <i>ativos</i>, que desconta servidores de DR, desativados, frames e
+desligados: os dois nao coincidem por definicao.</p>
 </div>
 
 <div class="cartao"><h2>Enviar arquivo</h2>
