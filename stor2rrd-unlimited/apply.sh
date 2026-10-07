@@ -762,8 +762,22 @@ add_topology() {
     # mapa: topo-inventory.py grava facts/inventory.csv e topo-build.py grava
     # topologia.json.novo e o renomeia. Sem escrita de grupo nestes tres, o
     # build morre com PermissionError e a tela nunca muda.
-    for d in "$S2R/topology" "$S2R/topology/facts" "$S2R/topology/uploads"; do
-      [ -d "$d" ] && chmod g+w "$d" 2>/dev/null
+    # g+s: arquivos criados aqui herdam o grupo do diretorio em vez do grupo
+    # primario de quem criou. Sem isto o usuario do servidor web deixa arquivos
+    # do grupo dele, que o usuario do produto nao consegue sobrescrever na
+    # coleta seguinte - e vice-versa. Com o grupo comum mais o umask 002 do
+    # gancho, qualquer um dos dois regrava o que o outro gerou.
+    for d in "$S2R/topology" "$S2R/topology/facts" "$S2R/topology/uploads" \
+             "$S2R/topology/facts/conexoes"; do
+      [ -d "$d" ] || mkdir -p "$d" 2>/dev/null || continue
+      chmod g+ws "$d" 2>/dev/null
+    done
+    # e os arquivos que ja existem, possivelmente do outro usuario
+    grupo=$(ls -ld "$S2R" | awk '{print $4}')
+    for f in "$S2R/topology/topologia.json" "$S2R/topology/facts/inventory.csv"; do
+      [ -f "$f" ] || continue
+      chgrp "$grupo" "$f" 2>/dev/null
+      chmod g+w "$f" 2>/dev/null
     done
     [ -d "$TOPO_KIT/collectors" ] && cp -Rp "$TOPO_KIT/collectors" "$S2R/topology/"
     chmod +x "$S2R/topology/bin/"*.sh "$S2R/topology/bin/"*.py "$S2R/topology/cgi/"*.sh 2>/dev/null

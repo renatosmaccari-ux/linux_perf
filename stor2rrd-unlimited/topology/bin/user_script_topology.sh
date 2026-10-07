@@ -13,6 +13,14 @@
 INPUTDIR=${INPUTDIR:-$(cd "$(dirname "$0")/.." && pwd)}
 export INPUTDIR
 
+# Dois usuarios rodam este script: o do produto, pela coleta, e o do servidor
+# web, pela importacao na GUI. Sem isto cada um cria arquivos que o outro nao
+# consegue sobrescrever - foi assim que topologia.json acabou apache:apache e
+# a coleta seguinte parou de conseguir regrava-lo. Com umask 002 os arquivos
+# nascem gravaveis pelo grupo, e o setgid que o apply.sh poe nos diretorios
+# faz esse grupo ser o mesmo para ambos.
+umask 002
+
 TOPO="$INPUTDIR/topology"
 LOG="$INPUTDIR/logs/topology.log"
 
