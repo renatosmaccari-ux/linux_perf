@@ -722,6 +722,18 @@ add_topology() {
     echo "apply.sh: could not set the CGI path in topologia.html" >&2
     return 1
   fi
+  # O produto carrega as paginas do menu com $('#content').load(url): o HTML
+  # entra na MESMA janela, sem iframe. A pagina usava position:fixed, que se
+  # ancora na janela e nao no elemento pai, entao o mapa cobria o logo, o menu
+  # e o conteudo do LPAR2RRD. Este passo a prende num contentor e acrescenta o
+  # botao de voltar.
+  if [ -f "$SELF_DIR/patches/topologia-embutida.py" ]; then
+    saida=$(python3 "$SELF_DIR/patches/topologia-embutida.py" \
+              "$S2R/html/topologia.html" 2>&1) \
+      && echo "  contained: html/topologia.html ($saida)" \
+      || { echo "apply.sh: nao consegui conter a pagina: $saida" >&2; return 1; }
+  fi
+
   # never overwrite a map the site has already built
   [ -f "$S2R/html/topologia.json" ] || cp -p "$TOPO_SRC/topologia.json" "$S2R/html/"
   echo "  installed: html/topologia.html, html/topologia.json"
