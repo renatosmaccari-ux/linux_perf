@@ -52,10 +52,41 @@ mkdir -p "$TOPO/facts/conexoes" "$TOPO/uploads" 2>/dev/null
 if [ -s "$TOPO/topologia.json" ] && \
    "$PY" -c 'import json,sys; json.load(open(sys.argv[1]))' "$TOPO/topologia.json" 2>/dev/null
 then
+  # A pagina busca topologia.json relativo a sua propria URL, ou seja, do
+  # diretorio web - nao de topology/. Se esta copia falhar, o mapa novo existe
+  # mas ninguem o ve.
+  #
+  # Ela falha justamente quando mais importa: o CGI de importacao roda como o
+  # usuario do servidor web, e html/ pertence ao usuario do produto. Antes isto
+  # era "cp ... 2>/dev/null" seguido de "map published" incondicional, de modo
+  # que uma importacao dizia ter funcionado e a tela continuava igual.
+  publicados=0
+  falhas=""
   for d in "$INPUTDIR/html" "$INPUTDIR/www" "$WEBDIR"; do
-    [ -n "$d" ] && [ -d "$d" ] && cp -p "$TOPO/topologia.json" "$d/topologia.json" 2>/dev/null
+    [ -n "$d" ] && [ -d "$d" ] || continue
+    # sem -p: preservar o dono falharia para o usuario do servidor web, e o
+    # que interessa e o conteudo
+    if cp "$TOPO/topologia.json" "$d/topologia.json" 2>/dev/null; then
+      publicados=$((publicados + 1))
+    else
+      falhas="$falhas $d"
+    fi
   done
-  echo "topology: map published ($(date))" >> "$LOG"
+
+  if [ -n "$falhas" ]; then
+    echo "topology: NAO consegui publicar o mapa em:$falhas"
+    echo "topology: o mapa novo esta em $TOPO/topologia.json, mas a pagina le"
+    echo "topology: do diretorio web - ela continuara mostrando o anterior."
+    echo "topology: quem rodou isto foi $(id -un); para a importacao pela GUI"
+    echo "topology: o arquivo precisa ser gravavel pelo usuario do servidor web:"
+    for d in $falhas; do
+      echo "topology:   chmod g+w $d/topologia.json"
+    done
+    echo "$(date '+%Y-%m-%d %H:%M:%S') topology: falha ao publicar em$falhas" >> "$LOG"
+  fi
+  if [ "$publicados" -gt 0 ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') topology: mapa publicado em $publicados local(is)" >> "$LOG"
+  fi
 else
   echo "topology: build produced no valid JSON, keeping the previous map" >> "$LOG"
 fi
