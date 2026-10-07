@@ -736,10 +736,16 @@ add_topology() {
 
   # never overwrite a map the site has already built
   [ -f "$S2R/html/topologia.json" ] || cp -p "$TOPO_SRC/topologia.json" "$S2R/html/"
+  # A importacao pela GUI roda como o usuario do servidor web e republica o
+  # mapa aqui. Sem escrita de grupo a copia falha, o JSON novo fica so em
+  # topology/ e a pagina - que le deste diretorio - continua mostrando o
+  # anterior, sem nada na tela dizendo por que.
+  chmod g+w "$S2R/html/topologia.json" 2>/dev/null || true
   echo "  installed: html/topologia.html, html/topologia.json"
   if [ -d "$S2R/www" ]; then
     cp -p "$S2R/html/topologia.html" "$S2R/www/"
     [ -f "$S2R/www/topologia.json" ] || cp -p "$TOPO_SRC/topologia.json" "$S2R/www/"
+    chmod g+w "$S2R/www/topologia.json" 2>/dev/null || true
   fi
 
   # ------------------------------------------------- the pipeline that feeds it
