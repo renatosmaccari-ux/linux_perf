@@ -15,7 +15,20 @@ export INPUTDIR
 
 TOPO="$INPUTDIR/topology"
 LOG="$INPUTDIR/logs/topology.log"
-[ -d "$INPUTDIR/logs" ] || LOG=/dev/null
+
+# Nao basta o diretorio existir: dois usuarios rodam este script - o do produto
+# pela coleta e o do servidor web pelo CGI de importacao - e o log pertence a um
+# so. Testar a escrita de verdade, senao cada importacao despeja
+# "Permission denied" no meio da saida e o log nao registra nada.
+# o teste vai num subshell: ":" e um builtin especial, e em POSIX sh uma falha
+# de redirecionamento num builtin especial encerra o shell - o script morria
+# aqui sem dizer nada
+if ! ( : >> "$LOG" ) 2>/dev/null; then
+  echo "topology: sem escrita em $LOG (rodando como $(id -un));"
+  echo "topology: o mapa e montado assim mesmo, mas sem registro. Para corrigir:"
+  echo "topology:   touch $LOG && chmod g+w $LOG"
+  LOG=/dev/null
+fi
 
 # python3 only: the builder reads files with an explicit encoding. The
 # inventory extractor still runs on 2.7, but there is no point splitting them.

@@ -741,6 +741,12 @@ add_topology() {
   # topology/ e a pagina - que le deste diretorio - continua mostrando o
   # anterior, sem nada na tela dizendo por que.
   chmod g+w "$S2R/html/topologia.json" 2>/dev/null || true
+  # o mesmo vale para o log: a coleta escreve nele como o usuario do produto e
+  # a importacao pela GUI como o do servidor web
+  if [ -d "$S2R/logs" ]; then
+    [ -f "$S2R/logs/topology.log" ] || : > "$S2R/logs/topology.log"
+    chmod g+w "$S2R/logs/topology.log" 2>/dev/null || true
+  fi
   echo "  installed: html/topologia.html, html/topologia.json"
   if [ -d "$S2R/www" ]; then
     cp -p "$S2R/html/topologia.html" "$S2R/www/"
