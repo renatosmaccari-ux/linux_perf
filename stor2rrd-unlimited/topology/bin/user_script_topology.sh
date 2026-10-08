@@ -24,6 +24,12 @@ umask 002
 TOPO="$INPUTDIR/topology"
 LOG="$INPUTDIR/logs/topology.log"
 
+# Vai para o banner de cada execucao. Sem isto nao havia como saber, a partir
+# do log, qual versao deste gancho correu: uma copia de instalacao que nao
+# pegasse deixava o script antigo no lugar e o log parecia o de sempre, so com
+# mensagens que a versao nova ja nao emite.
+VERSAO="2026-10-08"
+
 # Nao basta o diretorio existir: dois usuarios rodam este script - o do produto
 # pela coleta e o do servidor web pelo CGI de importacao - e o log pertence a um
 # so. Testar a escrita de verdade, senao cada importacao despeja
@@ -64,7 +70,7 @@ fi
 mkdir -p "$TOPO/facts/conexoes" "$TOPO/uploads" 2>/dev/null
 
 {
-  echo "=== topology $(date) ==="
+  echo "=== topology $(date) (gancho $VERSAO) ==="
   "$PY" "$TOPO/bin/topo-inventory.py" 2>&1
   "$PY" "$TOPO/bin/topo-build.py" "$TOPO" "$TOPO/topologia.json" 2>&1
 } >> "$LOG" 2>&1

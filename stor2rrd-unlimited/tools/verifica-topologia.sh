@@ -44,6 +44,20 @@ for d in lpar2rrd-cgi stor2rrd-cgi; do
   [ -f "$INPUTDIR/$d/topology.sh" ] && ok "$d/topology.sh" || falta "$d/topology.sh"
 done
 
+# Uma copia de instalacao que nao pegue deixa o gancho da versao anterior no
+# lugar sem nada na saida a dizer: o log continua a sair com as mensagens
+# antigas e parece que a correcao nao funcionou. A versao esta no proprio
+# script desde 2026-10-08; a ausencia dela e, por si, a resposta.
+G="$INPUTDIR/topology/bin/user_script_topology.sh"
+if [ -f "$G" ]; then
+  v=$(sed -n 's/^VERSAO="\(.*\)"/\1/p' "$G" | head -1)
+  if [ -n "$v" ]; then
+    ok "gancho da coleta: versao $v"
+  else
+    falta "gancho da coleta sem versao - e anterior a 2026-10-08, reinstale com apply.sh --add-topology"
+  fi
+fi
+
 echo
 echo "-- o grafo tem dados? --"
 JS=""

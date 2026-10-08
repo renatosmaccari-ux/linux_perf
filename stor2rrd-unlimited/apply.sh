@@ -704,6 +704,33 @@ registra_index() {
   echo "  registered: html/index.html (Topologia em Utilities)"
 }
 
+# ------------------------------------------------------- topology kit check
+# cp pode falhar ficheiro a ficheiro e ainda assim sair 0 em algumas
+# implementacoes, e um script antigo que fique no lugar nao aparece em lado
+# nenhum: o mapa e recusado com a mensagem da versao anterior e a saida da
+# instalacao parece correta. Comparar byte a byte com o pacote e o unico
+# teste que nao mente.
+verifica_kit() {
+  [ -d "$TOPO_KIT" ] || return 0
+  difs=""
+  for sub in bin cgi collectors; do
+    [ -d "$TOPO_KIT/$sub" ] || continue
+    for f in $(cd "$TOPO_KIT/$sub" && find . -type f 2>/dev/null); do
+      alvo="$S2R/topology/$sub/${f#./}"
+      if [ ! -f "$alvo" ]; then
+        difs="$difs $sub/${f#./}(ausente)"
+      elif ! cmp -s "$TOPO_KIT/$sub/${f#./}" "$alvo"; then
+        difs="$difs $sub/${f#./}"
+      fi
+    done
+  done
+  [ -z "$difs" ] && return 0
+  echo "apply.sh: estes ficheiros nao ficaram iguais aos do pacote:" >&2
+  for d in $difs; do echo "            topology/$d" >&2; done
+  echo "            o produto continua a correr a versao anterior deles" >&2
+  return 1
+}
+
 # -------------------------------------------------------------- topology page
 # A static page is not enough on its own: the installer copies a fixed list of
 # files from html/ into the web directory and regenerates tmp/menu.txt from
@@ -762,7 +789,16 @@ add_topology() {
   # ------------------------------------------------- the pipeline that feeds it
   if [ -d "$TOPO_KIT" ]; then
     mkdir -p "$S2R/topology/facts/conexoes" "$S2R/topology/uploads"
-    cp -Rp "$TOPO_KIT/bin" "$TOPO_KIT/cgi" "$S2R/topology/" 2>/dev/null
+    # Esta copia estava silenciada com 2>/dev/null e a linha "installed:
+    # topology/" vinha logo depois sem olhar para o resultado: uma copia que
+    # falhasse deixava os scripts da versao anterior no lugar e a saida dizia
+    # que estava instalado. Era invisivel, e o mapa continuava recusado com a
+    # mensagem da versao antiga.
+    saida_cp=$(cp -Rp "$TOPO_KIT/bin" "$TOPO_KIT/cgi" "$S2R/topology/" 2>&1) || {
+      echo "apply.sh: nao consegui copiar topology/bin e topology/cgi:" >&2
+      printf '%s\n' "$saida_cp" | sed 's/^/            /' >&2
+      return 1
+    }
     # A importacao pela GUI roda como o usuario do servidor web e reconstroi o
     # mapa: topo-inventory.py grava facts/inventory.csv e topo-build.py grava
     # topologia.json.novo e o renomeia. Sem escrita de grupo nestes tres, o
@@ -784,7 +820,13 @@ add_topology() {
       chgrp "$grupo" "$f" 2>/dev/null
       chmod g+w "$f" 2>/dev/null
     done
-    [ -d "$TOPO_KIT/collectors" ] && cp -Rp "$TOPO_KIT/collectors" "$S2R/topology/"
+    if [ -d "$TOPO_KIT/collectors" ]; then
+      saida_cp=$(cp -Rp "$TOPO_KIT/collectors" "$S2R/topology/" 2>&1) || {
+        echo "apply.sh: nao consegui copiar topology/collectors:" >&2
+        printf '%s\n' "$saida_cp" | sed 's/^/            /' >&2
+        return 1
+      }
+    fi
     chmod +x "$S2R/topology/bin/"*.sh "$S2R/topology/bin/"*.py "$S2R/topology/cgi/"*.sh 2>/dev/null
     [ -f "$S2R/topology/topologia.json" ] || cp -p "$TOPO_SRC/topologia.json" "$S2R/topology/"
     echo "  installed: topology/ (builder, collectors, uploads)"
@@ -1105,6 +1147,7 @@ if [ "$ADDTOPO" -eq 1 ]; then
   # avisa e o resto continua.
   add_topology   || { PARCIAL=1; echo "apply.sh: a pagina ficou instalada so em parte - veja os avisos acima" >&2; }
   registra_index || { PARCIAL=1; echo "apply.sh: nao registei a entrada no painel Utilities" >&2; }
+  verifica_kit   || PARCIAL=1
 fi
 
 if [ "$FIXPERMS" -eq 1 ]; then
