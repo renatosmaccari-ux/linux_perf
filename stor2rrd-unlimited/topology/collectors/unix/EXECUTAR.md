@@ -73,6 +73,30 @@ chmod +x *.sh
 ./run_all.sh -H            # completo + HMCs
 ```
 
+### Tetos da coleta de conexões
+
+`06_conexoes` emite no máximo `MAX_EDGE` arestas por direção e por host, as de
+mais sessões, e acima de `LIMIAR_FANIN` clientes numa porta passa a resumir por
+rede /24. Num parque com gateways e balanceadores o teto é atingido: o resumo
+traz `truncado_entrada` com quantas ficaram de fora.
+
+Para levantar os tetos sem editar nada:
+
+```sh
+TOPO_MAX_EDGE=6000 ./run_all.sh -s conexoes
+TOPO_MAX_EDGE=6000 TOPO_LIMIAR_FANIN=400 ./run_all.sh -s conexoes
+```
+
+O `collect.sh` escreve esses valores no início do payload antes de o enviar —
+nem o `ssh` nem o `sudo` levam o ambiente daqui para o host remoto, portanto
+exportá-los não bastaria. Sem as variáveis, valem 1200 e 150, como antes.
+
+Quantas arestas foram descartadas na última coleta:
+
+```sh
+grep -h "conexao,resumo,truncado" coleta_*/06_conexoes.csv | sort -u
+```
+
 Piloto obrigatório com pelo menos um host de cada família:
 
 ```sh

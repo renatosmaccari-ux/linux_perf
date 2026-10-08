@@ -52,6 +52,29 @@ WORKDIR="${OUT%.csv}.work"
 rm -rf "$WORKDIR"
 mkdir -p "$WORKDIR/out" "$WORKDIR/err" || exit 1
 
+# Os ajustes TOPO_* sao lidos pelo corpo do payload, que corre no host remoto
+# por "ssh ... sudo -n /bin/sh -s". Nem o ssh (sem AcceptEnv) nem o sudo levam o
+# ambiente daqui para la, portanto defini-los na linha de comando nao chegava a
+# lado nenhum - a coleta continuava com os valores por omissao e nada dizia.
+# Vao escritos no inicio do proprio payload, que e o unico que viaja.
+PRELUDIO=""
+for _v in TOPO_MAX_EDGE TOPO_LIMIAR_FANIN; do
+  eval "_val=\${$_v:-}"
+  [ -n "$_val" ] || continue
+  case "$_val" in
+    ""|*[!0-9]*) echo "[FALHA] $_v deve ser um inteiro: $_val" >&2; exit 1 ;;
+  esac
+  PRELUDIO="$PRELUDIO$_v=$_val; export $_v
+"
+done
+if [ -n "$PRELUDIO" ]; then
+  _orig="$PAYLOAD"
+  PAYLOAD="$WORKDIR/payload.sh"
+  { sed -n '1p' "$_orig"; printf '%s' "$PRELUDIO"; sed '1d' "$_orig"; } \
+    > "$PAYLOAD" || exit 1
+  echo "[INFO] ajustes no payload: $(printf '%s' "$PRELUDIO" | tr '\n' ' ')"
+fi
+
 # Col 1 = hostname; demais colunas = IPs alternativos (opcionais). Emite
 # "hostname|ip1,ip2,..." para fallback quando o hostname nao resolve ou nao conecta.
 awk 'NF && $1 !~ /^#/ {

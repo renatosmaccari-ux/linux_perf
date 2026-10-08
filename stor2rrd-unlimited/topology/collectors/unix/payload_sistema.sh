@@ -1,7 +1,7 @@
 #!/bin/sh
 # GERADO POR montar_payloads.sh - NAO EDITE AQUI.
 # Fonte: lib.sh + corpo/01_sistema.sh
-# Gerado em: 2026-09-22 13:44:01
+# Gerado em: 2026-10-08 18:50:10
 # ============================================================
 # lib.sh v2 - preambulo comum dos payloads (POSIX sh)
 # Executado como root via sudo -n. Emite CSV: categoria,item,chave,valor

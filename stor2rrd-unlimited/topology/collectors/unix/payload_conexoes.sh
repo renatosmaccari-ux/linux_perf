@@ -1,7 +1,7 @@
 #!/bin/sh
 # GERADO POR montar_payloads.sh - NAO EDITE AQUI.
 # Fonte: lib.sh + corpo/06_conexoes.sh
-# Gerado em: 2026-09-22 13:44:01
+# Gerado em: 2026-10-08 18:50:11
 # ============================================================
 # lib.sh v2 - preambulo comum dos payloads (POSIX sh)
 # Executado como root via sudo -n. Emite CSV: categoria,item,chave,valor
@@ -185,8 +185,13 @@ fi
 
 AMOSTRAS="${2:-3}"      # numero de snapshots de netstat/ss
 INTERVALO="${3:-10}"    # segundos entre snapshots
-MAX_EDGE=1200           # teto de arestas emitidas por direcao (ordenadas por sessoes)
-LIMIAR_FANIN=150        # acima disso, clientes de uma porta sao resumidos por rede /24
+# Tetos por host. Fixos, o operador nao tinha como levanta-los sem editar o
+# script em cada servidor: num ambiente com gateways e balanceadores, tres hosts
+# sozinhos perderam 27 mil arestas na coleta, e isso so aparecia na linha
+# "truncado_entrada" do resumo. Agora vem do ambiente, com os mesmos valores por
+# omissao: TOPO_MAX_EDGE=6000 sh collect.sh ...
+MAX_EDGE="${TOPO_MAX_EDGE:-1200}"      # teto de arestas por direcao (ordenadas por sessoes)
+LIMIAR_FANIN="${TOPO_LIMIAR_FANIN:-150}"  # acima disso, clientes de uma porta sao resumidos por rede /24
 MAX_HOSTS=300           # teto de linhas de /etc/hosts exportadas
 RMSOCK_AIX=0            # 1 = mapeia processo dos LISTEN no AIX via rmsock (ver EXECUTAR)
 PFILES_SOL=0            # 1 = mapeia processo dos LISTEN no Solaris via pfiles (ver EXECUTAR)
