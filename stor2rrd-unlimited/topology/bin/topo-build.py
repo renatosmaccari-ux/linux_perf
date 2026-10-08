@@ -158,6 +158,13 @@ def norm_host(valor):
     return v.split(".")[0]
 
 
+# "Desativado", "Decommissioned", "Desligado": a coluna de status das planilhas
+# nao tem vocabulario fixo. "off" sozinho nao entra - "ON" conteria "on", nao
+# "off", mas "Power Off" e "OFF" sim.
+DESATIVADO_RE = re.compile(r"desativ|desligad|decommission|retired|\boff\b", re.I)
+CLOUD_RE = re.compile(r"\b(aws|azure|gcp|google cloud|oracle cloud|oci|cloud)\b", re.I)
+
+
 def no_vazio(ident):
     return {
         "id": ident, "col": False, "plat": "", "os": "", "amb": "", "loc": "",
@@ -213,7 +220,8 @@ class Grafo(object):
         return chave
 
     # ------------------------------------------------------------ arestas
-    def aresta(self, origem, destino, portas, evidencia, confianca, sessoes=0):
+    def aresta(self, origem, destino, portas, evidencia, confianca, sessoes=0,
+               tipo=None):
         s, t = self.resolve(origem), self.resolve(destino)
         if not s or not t or s == t:
             return
@@ -225,6 +233,12 @@ class Grafo(object):
         if a is None:
             a = {"s": s, "t": t, "p": [], "sv": [], "n": 0,
                  "ev": evidencia, "cf": confianca}
+            # A pagina separa ligacao estrutural de conexao TCP por este campo:
+            # muda a distancia e a forca no layout, desenha a hierarquia e tira
+            # a ligacao da contagem de conexoes. Sem ele, frame->LPAR era mais
+            # uma linha solta no meio do grafo.
+            if tipo:
+                a["tipo"] = tipo
             self.arestas[chave] = a
         for p in portas:
             p = str(p).strip()
@@ -240,10 +254,69 @@ class Grafo(object):
             a["cf"] = "listen"
 
     # -------------------------------------------------------------- saida
+    # A pagina inteira e dirigida por "classe": e ela que da a cor, o raio, a
+    # entrada na legenda, cada filtro e cada contador do cabecalho. Sem ela o
+    # mapa saia monocromatico e o resumo dizia "0 cloud - 0 Windows - 0 hosts
+    # fisicos - 0 desativados" com milhares de nos na tela. O campo nunca era
+    # escrito: os dados para deduzi-lo ja estavam todos aqui.
+    #
+    # A ordem e a mesma da precedencia de cor da pagina: o que e estrutura
+    # (frame, chassi, cluster, hipervisor, VIOS) vence, e so depois o estado
+    # (desativado, DR), a hospedagem (cloud) e por fim a plataforma.
+    def _classifica(self):
+        hospeda = defaultdict(int)
+        for a in self.arestas.values():
+            if a.get("tipo") == "hospeda":
+                hospeda[a["s"]] += 1
+
+        for chave, n in self.nos.items():
+            plat = (n.get("plat") or "").lower()
+            st = (n.get("st") or "").lower()
+            amb = (n.get("amb") or "").lower()
+            loc = (n.get("loc") or "").lower()
+            so = (n.get("os") or "").lower()
+            ident = (n.get("id") or "").lower()
+            filhos = hospeda.get(chave, 0)
+
+            if plat == "frame" or ident.startswith("frame:"):
+                n["classe"] = "frame"
+                # raio() le fr.lpars sem protecao: a classe sem o objeto
+                # derrubava o desenho inteiro no primeiro quadro
+                n["fr"] = {"lpars": filhos, "modelo": n.get("mod", ""),
+                           "serial": n.get("chs", "")}
+            elif plat == "chassi" or ident.startswith("chassi:"):
+                n["classe"] = "chassi"
+                n["ch"] = {"globais": filhos, "modelo": n.get("mod", "")}
+            elif plat == "cluster" or ident.startswith("cluster:"):
+                n["classe"] = "cluster_virt"
+                n["cv"] = {"vms": filhos, "plataforma": n.get("os", "")}
+            elif plat == "vios":
+                n["classe"] = "vios"
+            elif filhos:
+                n["classe"] = "hipervisor"
+                n["hv"] = {"vms": filhos, "plataforma": n.get("plat", "")}
+            elif DESATIVADO_RE.search(st):
+                n["classe"] = "desativado"
+                n["grupo"] = "desat"
+            elif amb == "dr" or st == "dr" or ident.endswith("_dr"):
+                n["classe"] = "dr"
+            elif CLOUD_RE.search(loc) or plat == "cloud":
+                n["classe"] = "cloud"
+                n["grupo"] = "cloud"
+            elif plat == "windows" or "windows" in so:
+                n["classe"] = "windows"
+            elif n.get("col") or n.get("os") or n.get("loc") or n.get("fn"):
+                # tem inventario ou linha de planilha: e um host conhecido
+                n["classe"] = "normal"
+            # sem nenhum dos dois: so apareceu numa conexao TCP. Fica sem
+            # classe, como na topologia de referencia, e a pagina o desenha
+            # com a cor neutra.
+
     def json(self):
         for a in self.arestas.values():
             self.nos[a["s"]]["go"] += 1
             self.nos[a["t"]]["gi"] += 1
+        self._classifica()
         nos = []
         for chave, n in self.nos.items():
             n["s"] = None
@@ -329,7 +402,8 @@ def carrega_inventario(g, caminho, serial_lparid):
             g.define(fn_, "os", "IBM Power")
             g.define(fn_, "mod", r.get("modelo_frame") or modelo_do_serial(r.get("serial")))
             g.define(fn_, "chs", r.get("serial"))
-            g.aresta(frame, n["id"], [], "lpar2rrd", "lpar2rrd")
+            g.aresta(frame, n["id"], [], "lpar2rrd", "lpar2rrd",
+                     tipo="hospeda")
 
     # quantas casaram, e por qual criterio - vai para o log da coleta
     porforca = defaultdict(int)
@@ -545,7 +619,8 @@ def carrega_baseline(g, arquivos):
             # host: isso viraria um no sem existencia propria
             if (chassi_planilha and norm_host(chassi_planilha) != norm_host(ident)
                     and not TIPO_MAQUINA.match(chassi_planilha.strip())):
-                g.aresta(chassi_planilha, ident, [], "baseline", "baseline")
+                g.aresta(chassi_planilha, ident, [], "baseline", "baseline",
+                         tipo="hospeda")
     return lidos
 
 
@@ -817,7 +892,7 @@ def carrega_banco(g, caminho, rotulo):
     for pai, filho in dados["relacoes"]:
         if pai in guardados and filho in guardados and pai != filho:
             g.aresta(itens[pai]["label"], itens[filho]["label"], [],
-                     rotulo, rotulo)
+                     rotulo, rotulo, tipo="hospeda")
             arestas += 1
 
     return len(guardados), arestas
@@ -852,7 +927,7 @@ def carrega_arvore(g, dir_data):
             plat = itens[pai]["plataforma"]     # nao reaproveitar it: o laco
                                                  # anterior deixou o ultimo item
             g.aresta(itens[pai]["label"], itens[filho]["label"], [],
-                     plat, plat)
+                     plat, plat, tipo="hospeda")
             arestas += 1
 
     return len(guardados), arestas, dados["plataformas"]
