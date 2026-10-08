@@ -1,0 +1,681 @@
+# XORUX unlimited — edition module fork
+
+Removes the free-edition caps from **STOR2RRD** and **LPAR2RRD** by rewriting
+the edition-selection module the product already loads at runtime.
+
+Verified against STOR2RRD **7.10-1** and **8.08** and LPAR2RRD **8.08**.
+`apply.sh` detects the product and layout and does the right thing for each.
+
+The module is **derived from the one installed**, not copied from a fixed
+file: only the return value of `premium()` changes, so every other subroutine
+it exports survives. That matters — STOR2RRD's module exports `premium` alone,
+LPAR2RRD's also exports `get_rperf_all`, `rperf_check`, `lpm`, `get_lpar_num`
+and `lpm_find_files`, and a future version may export more.
+
+Upstream STOR2RRD is distributed by XORUX under the GNU GPL v3 — the full
+licence text ships as `Copyright.txt` and every Perl source file carries the
+per-file grant ("you can redistribute it and/or modify it under the terms of
+the GNU General Public License"). GPLv3 §7 is explicit that further
+restrictions may be removed. This fork exercises that grant.
+
+## How the caps actually work
+
+There is exactly one switch. Every limit in the product keys off it:
+
+| Layer | Check | Effect |
+|---|---|---|
+| `bin/data_load.pl`, `storage.pl`, `san.pl`, `lan.pl`, `detail-cgi.pl`, `overview.pl`, `reporter.pl`, `volume_inactive.pl`, `AlertStor2rrd.pm`, `CustomStor2rrd.pm`, `GraphVizLib.pm`, `LoadMetrics.pm` | `-f bin/premium.pl` ? load it : load `bin/standard.pl` | selects the edition module |
+| all of the above | `length( premium() ) == 6` | unlocks the capped feature |
+| `bin/genjson.pl:351` | `-f bin/premium.pl` → `$free = 0` | drives `sysInfo.free` in the JSON the GUI consumes |
+| `bin/install-st.sh:41` | `-f bin/premium.pl` | writes `O:0` (full) vs `O:1` (free) into `menu.txt` |
+| `html/jquery/main.js`, `mainLib.js` | `sysInfo.free == 1` | every browser-side cap and upsell banner |
+
+`bin/standard.pl` returns `"free"` — 4 characters, so `length() == 6` is never
+true. The Enterprise module returns a 6-character string. That is the whole
+mechanism; there is no key, no checksum, no phone-home. `files.sum` covers
+only 8 top-level files and nothing reads it at runtime.
+
+### LPAR2RRD: a second gate
+
+LPAR2RRD 8.08 caps hosts per platform in `HostCfg::getHostConnections`
+(`HostCfg.pm:363-399`), and the platform names and paths there are
+hex-escaped in the source. A host is dropped when
+
+```perl
+( length($prem) != 6 || !-f "$basedir/html/.<marker>" ) && $cntr > <limit>
+```
+
+so lifting the cap needs `premium()` at 6 characters **and** the marker file:
+
+| Platform | Cap | Marker | Ships in free |
+|---|---|---|---|
+| IBM Power Systems (HMC) | 1 | `html/.p` | yes |
+| IBM Power CMC | 1 | `html/.p` | yes |
+| VMware (vCenter) | 1 | `html/.v` | yes |
+| RHV (oVirt) | 4 | `html/.o` | **no** |
+| Nutanix | 4 | `html/.n` | **no** |
+| Openshift | 8 | `html/.t` | **no** |
+
+Stock ships `.p` and `.v` only, so a fork that just flips `premium()` still
+leaves RHV, Nutanix and Openshift capped. Measured with 3 HMC, 3 CMC, 3
+vCenter, 6 RHV, 6 Nutanix and 10 Openshift hosts configured, calling the
+product's own `getHostConnections`:
+
+| | Power | CMC | VMware | RHV | Nutanix | Openshift |
+|---|---|---|---|---|---|---|
+| stock | 1 | 1 | 1 | 4 | 4 | 8 |
+| `premium()` rewritten only | 3 | 3 | 3 | **4** | **4** | **8** |
+| plus the markers | 3 | 3 | 3 | 6 | 6 | 10 |
+
+`apply.sh` decodes the marker paths out of `HostCfg.pm` rather than hardcoding
+them, so a version that adds a platform is picked up automatically, and it
+records the ones it creates in `.xoruxfork-created` so `--revert` removes
+exactly those and leaves the vendor's own `.p` and `.v` alone.
+
+`getHostConnections` is what every collector calls — `power-json2db.pl`,
+`nutanix-api2json.pl`, `ovirt-db2json.pl`, `kubernetes-json2db.pl`,
+`proxmox-api2json.pl` and the rest — so a capped host is configurable in the
+GUI and never collected.
+
+### 8.x: same switch, different module
+
+8.x replaced the `standard.pl` / `premium.pl` pair with a single module,
+`bin/XoruxEdition.pm`, whose stock `premium()` also returns `"free"`. Every
+gate is unchanged (`length( premium() ) == 6`); `bin/install-st.sh` now tests
+it as `perl -MXoruxEdition -e 'print premium();' | wc -m -eq 6`. So on 8.x the
+fork replaces that module instead of adding a file. The original is kept as
+`XoruxEdition.pm.xoruxfork-orig` and restored by `--revert`.
+
+### What is capped in the free edition
+
+Verified by reading the 7.10-1 sources:
+
+- alert rules limited to 3 devices/custom groups (`AlertStor2rrd.pm:385`)
+- custom-group graphing: 10 volumes, 4 pools, 4 SAN/LAN ports (`main.js:4068-4074`)
+- scheduled and historical reports disabled; report clone disabled
+- PDF export limited to one object per section (`genpdf.pl:453`)
+- SAN topology limited to local (`GraphVizLib.pm:3136,3362`)
+- `price_raw` metrics stripped (`LoadMetrics.pm`, `detail-cgi.pl:933`)
+- "Free Edition" badge in the footer
+
+### The device count cap — 8.x only
+
+8.x added the cap that 7.x never implemented, and it sits on the **collection**
+path rather than in the GUI. That is why a device can be added and saved but
+never produces data:
+
+- `DeviceCfg::getActiveDeviceList` (`DeviceCfg.pm:1264`) sorts the enabled
+  devices of a class alphabetically and splits them with `if ( $counter <= 4 )`
+  into `goon` and `byebye`. The cap is **per class**, so 4 STORAGE + 4 SAN +
+  4 LAN. (`goon` is written but never read; only `byebye` is consumed.)
+- `DeviceCfg::getLicencedDevices` (`:1375`) drops every `byebye` device when
+  `length($prem) != 6`.
+- `DeviceConnTest::json_to_line` (`:73`) and `json_to_line_san` (`:175`) do the
+  same when building the device lines that drive collection. `configuration.pl:530`
+  calls them, so a `byebye` device never reaches a `load_*perf.sh` run at all.
+- `ping_test.pl:253` iterates `getLicencedDevices`, so capped devices are not
+  even connection-tested.
+
+The GUI text is inconsistent with the code: `main.js` warns that "a maximum of
+8 active storage devices are allowed" while the backend enforces 4. The
+backend is authoritative.
+
+Measured on an 8.08 tree with 7 STORAGE, 6 SAN and 6 LAN devices configured,
+calling the product's own `getLicencedDevices`:
+
+| | STORAGE | SAN | LAN |
+|---|---|---|---|
+| stock (`premium()` = `"free"`) | 4 of 7 | 4 of 6 | 4 of 6 |
+| fork (`premium()` = `"forked"`) | 7 of 7 | 6 of 6 | 6 of 6 |
+
+**On 7.10-1 no such cap exists.** All 14 `length($prem)` sites (4 of them
+commented out), all 28 `premium.pl` decision points, all 13 `sysInfo.free` and
+7 `sysInfo.basename` uses in the bundles, `DeviceCfg::getConfiguredDevices`
+and the 739 lines of `load.sh` were inspected: nothing counts devices. In the
+7.x line that number is a licensing term, not a technical block.
+
+## Vendor bugs (`--fix-vendor-bugs`, opt-in)
+
+Defects in the stock product that have nothing to do with the free/Enterprise
+split. Kept behind their own flag so the fork's scope stays legible; the
+pre-patched packages include them.
+
+**LPAR2RRD 8.08 — the admin menu's "IBM Power Systems" page is dead.**
+`html/index.html` links to `hosts.sh?cmd=form&platform=ibm`, but `ibm` is not a
+key of `%platforms` in `bin/host_cfg.pl`, so line 144 —
+
+```perl
+my $platform = exists $platforms{ $PAR{platform} } ? $PAR{platform} : "";  # drop unknown platforms
+```
+
+— rewrites it to `""`, and the `elsif ( $platform eq "ibm" )` that renders the
+HMC/CMC tabs is unreachable. The request returns `cfgpage("")`: an empty host
+table with `data-platform=""`, an empty cron hint, and a New button that does
+nothing. Confirmed against a browser HAR from a live system: the call returns
+200 with exactly that body. The fix adds `ibm` as a key, with no `pid` and no
+`croncmd` — that branch only prints the tabs and returns, so giving it a `pid`
+would produce a spurious second cron error.
+
+The workaround is skipped on products without `bin/host_cfg.pl`, is idempotent,
+and rolls itself back if the file compiled before the edit and not after.
+
+**LPAR2RRD — one sick VIOS blanks every healthy VIOS on the same server.**
+`bin/hmc_rest_api.pl:1536` fetches all VIOS of a managed system in one call:
+
+```perl
+eval { $conf = callAPI("rest/api/uom/ManagedSystem/$uid/VirtualIOServer"); };
+```
+
+When a single VIOS cannot serve its `PhysicalVolume` inventory the HMC answers
+**500 for the whole collection**. `callAPI` returns `-1`, the `else` branch
+prints `Rest API problem vioses`, `is_vios` stays empty, and `getServerNPIV`
+bails with `VIOS response is not an ARRAY!`. The managed system then loses the
+SEA, NPIV and VSCSI data of its *working* VIOS as well — LAN, SAN and SAS all
+render empty, and both VIOS drop out of the tree once their `.rrm` files age
+past 30 days.
+
+Measured on a live HMC (same result from both HMCs managing the server):
+
+| request | result |
+|---|---|
+| `…/VirtualIOServer` (collection) | **500** `Error occurred while querying for PhysicalVolume from VIOS vios164x with ID 1` |
+| `…/VirtualIOServer?group=None` | 200 |
+| `…/VirtualIOServer/<uuid vios164x>` | **500** |
+| `…/VirtualIOServer/<uuid vios264x>` | **200** |
+
+The fix inserts a fallback before `my @LPs;`: when `$conf` is not a HASH, it
+enumerates with `?group=None`, calls each VIOS by UUID, and rebuilds `$conf` in
+the exact shape the existing `elsif` already consumes — so nothing downstream
+changes. VIOS that fail individually are logged and skipped; if none answers,
+`$conf` is left alone and the original behaviour stands. `callAPI` passes its
+argument through verbatim, so the query string needs no change there.
+
+The patch body lives in `patches/vios-collection-fallback.pl`. Verified against
+six scenarios with a stub harness — the live 64X case, both VIOS healthy, no
+VIOS answering, `group=None` also failing, a single-VIOS feed, and a healthy
+collection (fallback inert, zero extra HMC calls).
+
+This is a workaround, not a cure: the broken VIOS's data is still unavailable,
+because the HMC will not serve it. The real fix is on the HMC/VIOS side.
+
+**LPAR2RRD — a failed `cmd=json` kills every button on a configuration page.**
+Every New, Edit, Clone, Delete and Connection Test button is bound *inside* the
+callback of `$.getJSON('/lpar2rrd-cgi/hosts.sh?cmd=json')` in
+`html/jquery/main.js:6113`. If that request fails, or its JSON does not parse,
+the callback never runs: the buttons render and do nothing, the host table stays
+empty, and nothing on screen says why. The fix chains a `.fail()` so the reason
+is reported. It does not make a broken endpoint work — it stops the page from
+failing in silence. Body in `patches/hostcfg-json-failure.js`.
+
+**LPAR2RRD — one malformed record blanks the whole page, buttons included.**
+Inside that same callback, `main.js:6197` reads
+
+```js
+if (! val.host ) { val.host = val.hosts[0]; }
+```
+
+An OracleDB entry saved with only `uuid` and `dataguard` — no `host`, no
+`hosts` — makes `val.hosts[0]` throw `TypeError: Cannot read properties of
+undefined (reading '0')`. That is a *synchronous* exception, which the `.fail()`
+above cannot catch: it aborts the `$.each` over the aliases, the callback with
+it, and the page ends up with zero rows and dead buttons although the JSON
+listed six entries. Reproduced with a live `hosts.json`: stock renders 0 of 2
+rows, patched renders 2 of 2. Body in `patches/oracledb-host-undefined.js`.
+
+**LPAR2RRD — `write_json` is not atomic, so collectors read truncated JSON.**
+`Xorux_lib::write_json` is the write path for every JSON file the product
+produces — 225 call sites across 57 scripts. It writes to a `File::Temp` file in
+`/tmp` and then copies it over the destination:
+
+```perl
+my ( $fh, $file_name ) = tempfile( UNLINK => 1 );
+print $fh $json->encode($hash_ref);
+close($fh);
+copy( $file_name, $path );
+```
+
+`File::Copy::copy` truncates the destination and streams into it, so it is not
+atomic, and its return value is never checked. Two consequences:
+
+- a reader that opens the file mid-copy gets cut-off JSON;
+- a write that fails partway (a full disk) leaves the destination truncated for
+  good, while `write_json` still returns 1 and the caller logs success.
+
+Seen on a live system as `data/OracleDB/<alias>/configuration/conf.json`
+failing to parse at **character offset 303104** — 74 × 4096, a block boundary,
+not the end of a JSON document — which silently dropped that whole database
+instance out of the collection while its four siblings ran fine.
+
+Measured with a reader looping over a 277 KB file while a writer rewrote it,
+12 seconds each:
+
+| `write_json` | reads | reads that got cut-off JSON |
+|---|---|---|
+| stock | 68 | **18** (26%) |
+| patched | 54 | **0** |
+
+The fix writes a sibling temp file in the *destination* directory and
+`rename()`s it into place — atomic within one filesystem — with `print`,
+`close`, the byte count and `rename` all checked, and the previous file's mode
+and group carried over so the web server keeps its read access. The original
+author's own commented-out code did exactly this; the `/tmp` tempfile that
+replaced it is why `rename` was no longer possible, and writing in the
+destination directory also removes the leftover `/tmp` files their comment
+complains about. Body in `patches/write-json-atomic.pl`. STOR2RRD's
+`Xorux_lib.pm` has no `write_json`, so the fix skips there.
+
+The patch stops new corruption; it does not repair files already cut off.
+`--fix-vendor-bugs` therefore also installs **`bin/acha-json-corrompido.pl`**,
+which walks `data/` and reports every `.json` that is empty or will not decode,
+flagging block-aligned sizes as interrupted writes. With `--apply` it renames
+each one to `.CORROMPIDO-<timestamp>` so the next collection regenerates it:
+
+```
+perl -I/home/lpar2rrd/lpar2rrd/lib /home/lpar2rrd/lpar2rrd/bin/acha-json-corrompido.pl
+perl -I/home/lpar2rrd/lpar2rrd/lib /home/lpar2rrd/lpar2rrd/bin/acha-json-corrompido.pl --apply
+```
+
+**LPAR2RRD — saving the host configuration can empty `hosts.json`.**
+`bin/host_cfg.pl:246` opens the file for writing *before* parsing the payload:
+
+```perl
+if ( open( my $CFG, ">", "$cfgdir/hosts.json" ) ) {
+  my $cfg = decode_json( $PAR{acl} );
+```
+
+`open(">")` truncates immediately, so a payload that does not parse — a
+truncated request, a lost parameter — kills `decode_json` with the file already
+at zero bytes, and every configured device goes with it. These installations
+accumulate `hosts.json.CORROMPIDO.bak-*` and `hosts.json.REPAIRED` files for
+exactly this reason. The write was unchecked too (`print` and `close` return
+values ignored), so a full disk produced a cut-off file under a "Hosts
+configuration has been successfully saved!" message, and the `flock(LOCK_EX)`
+came *after* the truncation, which is too late to protect anything.
+
+The same four payloads against the stock block and the patched one:
+
+| payload | stock | patched |
+|---|---|---|
+| valid | saved | saved |
+| truncated JSON | **hosts.json → 0 bytes** | untouched, error reported |
+| empty | **hosts.json → 0 bytes** | untouched, error reported |
+| valid JSON, no `platforms` | **overwritten with 45 bytes** | untouched, error reported |
+| `[1,2,3]` | **hosts.json → 0 bytes** | untouched, error reported |
+
+The fix validates the payload before touching the file, writes to a sibling temp
+and `rename()`s it in, checks the write, preserves the file's mode and group,
+and reports a failure instead of claiming success — the previous configuration
+survives every failure path. Unchanged-password merging and the change log still
+work. Bodies in `patches/hostsjson-atomic-open.pl` and
+`patches/hostsjson-atomic-write.pl`.
+
+**LPAR2RRD — a Nutanix 401 is logged as a wall of HTML and shown as nothing.**
+The three `restCall` subs in `bin/Nutanix.pm` log the response body with no
+status code:
+
+```perl
+error( "ERROR: Can't handle request (".$url."): " . Dumper( $response->content ) );
+```
+
+A Prism that answers 401 therefore fills `logs/error.log-nutanix` with the
+Tomcat error page once per endpoint — roughly 180 lines to convey one number —
+while the GUI's connection test (`bin/nutanix-apitest.pl`) says only **"No
+clusters reached"**, whatever went wrong. Wrong password, a user with no role,
+an address that is a Prism Central rather than a Prism Element, and a plain
+timeout are indistinguishable on screen; the one fact that separates them, the
+HTTP status, is the one the product throws away. The test also read
+`$clusters->{metadata}{totalEntities}` on an undefined `$clusters`, so every
+failure emitted "Use of uninitialized value in numeric ge".
+
+The fix logs the status, the reason phrase and `WWW-Authenticate`, reduces an
+HTML error page to its `<title>`, and lets the connection test name the cause.
+Verified against a stub Prism in four states:
+
+| Prism answers | stock test says | patched test says |
+|---|---|---|
+| 401 + Tomcat page | No clusters reached | HTTP 401 Unauthorized — check the password, the user's role (Viewer minimum) and whether the account is locked |
+| 403 | No clusters reached | HTTP 403 Forbidden — authenticated, but no role that can read the API |
+| connection refused | No clusters reached | HTTP 500 Can't connect to … (Connection refused) |
+| 200, 2 clusters | Reached 2 clusters | Reached 2 clusters |
+
+Bodies in `patches/nutanix-http-status.pl` and
+`patches/nutanix-apitest-status.pl`. Both skip cleanly on products without the
+Nutanix module.
+
+**LPAR2RRD — an OracleDB datasource with no value becomes `U` and disappears.**
+`OracleDBLoadDataModule::update_rrd` substitutes `U` for every missing metric
+and says nothing:
+
+```perl
+if ( !defined $hash{$item} || $hash{$item} eq '' ) {
+  $value = 'U';
+}
+```
+
+The graph then draws `-nan` and nothing in the interface explains it. On a live
+system every instance wrote
+
+```
+Capacity  <ts>:4391.78687286376953125:490.487548828125:U
+Cpct      <ts>:U:142.20703125:U:U
+```
+
+— 1 of 3 and 3 of 4 datasources empty — because the monitoring user had no
+`SELECT` on `V$LOG`, `V$CONTROLFILE` and `V$RECOVERY_FILE_DEST`. The cause was
+in the same run's log as `ORA-00942: table or view does not exist`, 180 lines
+away from the three tabs that went blank (Used, Recovery File Destination,
+Online Redo Logs). The datasources map to the views one to one:
+
+| tab | datasource | source in `oracledb-sql/*_L.sql` |
+|---|---|---|
+| Used | `used`, `free` | `DBA_DATA_FILES`, `DBA_FREE_SPACE` |
+| Online Redo Logs | `log_capacity` | `V$LOG` |
+| Recovery File Destination | `recoverysize`, `recoveryused` | `V$RECOVERY_FILE_DEST` |
+| (Capacity detail) | `controlfiles`, `tempfiles` | `V$CONTROLFILE`, `DBA_TEMP_FILES` |
+
+The fix names what went missing and where it comes from, so an unexplained
+`-nan` becomes a `GRANT` to ask the DBA for:
+
+```
+oracleDB-json2rrd.pl : Cpct ORA-xxx sem dado para: controlfiles (V$CONTROLFILE),
+  recoverysize (V$RECOVERY_FILE_DEST), recoveryused (V$RECOVERY_FILE_DEST)
+  -> gravado U, grafico mostra -nan
+oracleDB-json2rrd.pl : se a origem e uma view V$, confira o GRANT SELECT do
+  usuario de monitoracao (ORA-00942 no log da coleta)
+```
+
+The update string itself is byte-identical to stock — the line is printed only
+when a datasource is missing, and stops once the grant exists. Body in
+`patches/oracledb-missing-ds.pl` and `patches/oracledb-missing-ds-decl.pl`.
+
+A note on what this fix is *not* for: an instance that is missing its `.rrd`
+files entirely has a different problem. The RRD is created inside
+`data_to_rrd`, which only runs for sections present in the collected JSON, so an
+instance whose `configuration/conf.json` failed to parse never reaches
+`oracleDB-json2rrd.pl` at all and no RRD is created for it. That is the
+truncated-JSON bug above; `bin/acha-json-corrompido.pl` finds those.
+
+## Shared-tree permissions (`--fix-permissions`, opt-in)
+
+Two users touch an installed tree:
+
+| user | role |
+|---|---|
+| the product user (`lpar2rrd` / `stor2rrd`) | runs collection from cron |
+| the web server user (`apache`, `www-data`, …) | runs the CGI under `html/` |
+
+`scripts/update.sh` chowns the tree to whoever runs it, and at line 1188 carries
+`# do not touch etc/web_config here!` — so a plain `chown -R lpar2rrd:lpar2rrd`
+leaves the CGI unable to read `etc/web_config/hosts.json`. The symptom is not a
+permission error: the connection test finds no credentials to send and every
+device reports **authorization failed**, which looks exactly like a wrong
+password on the HMC side.
+
+`--fix-permissions` repairs an installed tree:
+
+- `chmod -R g+rX` over the whole tree
+- `chmod g+w` on `etc/web_config`, `tmp` and `logs`
+- checks every directory *above* the tree for a traversal bit, since the CGI
+  has to reach it (a `chmod 700 /home/lpar2rrd` blocks it just as effectively)
+- checks whether the web server user is in the tree's group
+
+The last item is deliberately **reported, not applied** — group membership is a
+system change outside the product tree, and it needs root plus a web server
+restart:
+
+```sh
+usermod -aG stor2rrd apache && systemctl restart httpd
+```
+
+The flag is **additive**: `--revert` does not undo it, because the prior modes
+are not recorded.
+
+`build-package.sh` applies the same `g+rX` to the payload, so a fresh install
+starts correct. Run `install.sh` / `update.sh` under **umask 022** — the
+installer copies with `cp -R`, which masks the source mode with the caller's
+umask, and a umask of 027 or 077 strips the group bits straight back off.
+
+## Dependency map (`--add-topology`, opt-in)
+
+Installs a static dependency-map page as a GUI entry ("Mapa de dependencias"
+in the tools menu) on either product.
+
+A page dropped into `html/` is not enough on its own. The GUI installer
+(`bin/install-html.sh` on LPAR2RRD, `bin/install-st.sh` on STOR2RRD) copies a
+**fixed list** of files from `html/` into the web directory, and rebuilds
+`tmp/menu.txt` from scratch on every run — so an unregistered page is both
+unreachable and unlinked after the next collection cycle. `--add-topology`
+therefore does four things:
+
+| | |
+|---|---|
+| `html/topologia.html` + `html/topologia.json` | the page and its data |
+| `www/` | same two files, so it works before the next installer run |
+| `html/menu_default.txt` | `T:topo:` entry, used until the installer has run |
+| the installer | one `cp … $WEBDIR/` line and one `menu "$type_tmenu"` line |
+
+Both installer edits are pure insertions marked `# xoruxfork topology`, and the
+menu line mirrors its neighbours — LPAR2RRD appends `>> "$MENU_OUT"`, STOR2RRD
+does not, because its `menu()` writes to `$MENU_OUT` itself. The
+`menu_default.txt` line is derived from each product's own `T:doc:` entry, so
+it picks up the right number of trailing fields (LPAR2RRD has one more).
+
+`dash/build-topology.py` prepares the page from a self-contained export:
+
+- **splits the inline JSON out** to `topologia.json`, fetched at load time, so
+  the map can be refreshed by replacing one file — no rebuild, no reinstall
+- **inlines d3** from `dash/assets/d3.min.js` and drops the CDN tag
+- **drops the Google Fonts links**; the stylesheet already falls back to
+  `system-ui` / `ui-monospace`
+
+The result makes **no outbound request** — verified in a headless browser: the
+page rendered its canvas with zero requests off the local origin. That matters
+on a monitoring host, which generally cannot reach the public internet and has
+no reason to.
+
+The builder refuses to ship a broken payload: it parses the JSON, checks the
+bundle looks like d3, and aborts if any of the three external hosts survives
+the rewrite.
+
+> `dash/build/` is **not** in this repository. The map contains the site's real
+> hostnames, internal addresses, open-port lists, locations and DR pairings;
+> this repo is public. Build it locally and it flows into the package, which is
+> delivered privately.
+
+## Pre-patched package
+
+`build-package.sh` turns an original XORUX tarball into one with the fork
+already applied, so the vendor's own `install.sh` / `update.sh` install it
+directly — nothing to run afterwards:
+
+```sh
+./build-package.sh stor2rrd8.08.tar ./dist   # -> dist/stor2rrd-8.08-unlimited.tar
+./build-package.sh lpar2rrd8.08.tar ./dist   # -> dist/lpar2rrd-8.08-unlimited.tar
+tar xf stor2rrd-8.08-unlimited.tar && cd stor2rrd-8.08 && ./install.sh
+```
+
+The payload directory differs by product (`dist_storage` for STOR2RRD, `dist`
+for LPAR2RRD) and so does the inner archive name; both are detected.
+
+It detects the product and layout, patches the payload tree, drops the
+`.xoruxfork-orig` backups and the revert manifest (the package *is* the fork),
+adds `FORK-NOTICE.txt` marking the build as modified per GPLv3 §5(a), and
+regenerates `files.sum`.
+
+On 8.x the payload is an inner `stor2rrd.tar.Z` in classic LZW format. The
+installer decompresses it with `uncompress(1)` and only falls back to
+`gunzip(1)`, so a gzip stream named `.tar.Z` would break on any host with a
+real `uncompress` — and `compress(1)` is missing from most build hosts.
+`tools/lzw_compress.py` therefore writes the genuine format, including the
+8-code padding on width changes and compress(1)'s dictionary-reset heuristic
+(without it a 50 MB payload nearly triples). `build-package.sh` decompresses
+what it just wrote and fails the build unless it matches byte for byte.
+
+## Install in place
+
+Every step past the edition module is opt-in, so a bare run installs only that
+one - no topology page, no vendor fixes, no permission work. For the whole
+fork, as root:
+
+```sh
+./apply.sh --fix-vendor-bugs --add-topology --fix-permissions /home/lpar2rrd/lpar2rrd
+```
+
+A bare run now prints which optional steps it skipped and this line to repeat.
+Individually:
+
+```sh
+./apply.sh /home/stor2rrd/stor2rrd            # rewrite the edition module
+./apply.sh --fix-vendor-bugs /home/lpar2rrd/lpar2rrd   # + vendor bug workarounds
+./apply.sh --add-topology /home/lpar2rrd/lpar2rrd       # + the dependency-map page
+./apply.sh --harden /home/stor2rrd/stor2rrd   # also raise residual literals to 9999
+./apply.sh --fix-permissions /home/lpar2rrd/lpar2rrd    # + shared-tree permissions
+./apply.sh --status /home/stor2rrd/stor2rrd   # report state
+./apply.sh --revert /home/stor2rrd/stor2rrd   # undo everything
+```
+
+Exit status is 1 when a step reported itself incomplete, even though the rest
+was installed; the warnings name which one.
+
+Run it as the `stor2rrd` / `lpar2rrd` user (or root). The home directory is
+auto-detected from `$XORUX_HOME`, `$STOR2RRD_HOME`, `$LPAR2RRD_HOME` or the
+usual install paths if not given.
+
+`--harden` rewrites the residual hardcoded literals to 9999 — the 8.x device
+cap `$counter <= 4` in `DeviceCfg.pm`, the alert cap `$index < 4` in
+`AlertStor2rrd.pm`, and the browser-side `3`, `3`, `10`, `4`, `4`, `4`, `4` in
+`main.js` / `mainLib.js`. It is **not required**: every one of those branches
+is unreachable once `premium()` returns 6 characters. It exists as belt and
+braces, is idempotent, keeps `.xoruxfork-orig` backups, and rewrites only lines
+anchored on the free-edition condition itself. Patterns that do not apply to
+the installed version simply do not match.
+
+On 7.x `apply.sh` refuses to overwrite a `bin/premium.pl` it did not create, so
+a genuine XORUX Enterprise module is never clobbered; use `--force` to
+override. On 8.x the stock `XoruxEdition.pm` is always backed up first.
+
+After applying, the GUI picks up the change on the next `install-st.sh` run
+(the script clears the cached `menu.txt` to hurry it along).
+
+## Upgrades
+
+A XORUX package upgrade replaces `bin/` and `html/`, dropping `bin/premium.pl`
+(7.x) or restoring the stock `bin/XoruxEdition.pm` (8.x). Re-run `apply.sh`
+after every upgrade; `--status` tells you whether it is still in place.
+
+The upgrade also replaces the `.xoruxfork-orig` baselines, so run `--revert`
+*before* upgrading if you want the backups to stay meaningful.
+
+## Known limitations
+
+- **Scheduled report generation is not implemented.** On 7.x upstream
+  `bin/standard.pl` defines `set_reports()` as a no-op stub and the real
+  implementation lives inside the Enterprise `premium.pl`, which is not part
+  of the GPL source tree shipped here; this fork keeps the stub. 8.x moved
+  that code to a separate `bin/reporter-premium.pl` (`reporter.pl:274`) which
+  is likewise absent. The GUI will now *let you define* scheduled reports, but
+  nothing generates them. Report definitions are harmless; simply do not rely
+  on them.
+- The same applies to any other behaviour that lived only in the vendor's
+  `premium.pl`. Everything gated purely by `length(premium()) == 6` — alerts,
+  topology, custom groups, PDF, `price_raw` — works, because that code is in
+  the GPL tree.
+- `html/jquery/mainLib.js` ships only as a webpack bundle with no
+  corresponding source in the tarball. `--harden` edits it textually.
+
+## Redistribution
+
+If you distribute this fork, GPLv3 applies: keep the licence, provide
+corresponding source, and mark modified versions as changed (§5a).
+"STOR2RRD" and "XORUX" are the vendor's marks — copyright permission is not
+trademark permission, so rename the product and drop the vendor branding
+before publishing a fork. Keep support requests away from XORUX; a modified
+build is yours to support.
+
+**Both products — `"$obj->method"` prints `HASH(0x...)->method` instead of calling it.**
+In Perl, a method call inside a double-quoted string is not a method call: `$obj`
+interpolates — stamping `HTTP::Response=HASH(0x2aaab0d8)` — and `->status_line`
+stays as text. The two products do this in **19 places, every one on an error
+path**, so the status code that would distinguish a 401 from a 403, a 500 or a
+timeout is exactly what the message throws away. From a live log:
+
+```
+ERROR naperf.pl: Request error: HTTP::Response=HASH(0x2aaab0d8)->status_line
+```
+
+| product | files | occurrences |
+|---|---|---|
+| STOR2RRD | `naperf.pl`, `falconstorperf.pl` (5), `falconstorconf.pl` (3), `falconstor_apitest.pl` (2), `dothill_apitest.pl` (2), `Xorux_lib.pm`, `AlertStor2rrd.pm` | 15 |
+| LPAR2RRD | `alrt.pl`, `hmc_rest_api.pl`, `lpar2rrd-daemon.pl`, `orvm-api2json.pl` | 4 |
+
+`@{[ ... ]}` evaluates the expression inside the string. Only `->method` is
+rewritten: `->{key}` and `->[index]` already interpolate correctly and are left
+alone, as is `->method(args)`, which needs a human to look at it. Verified by
+compiling every `.pl` and `.pm` in both trees before and after — **zero
+regressions** — and by running the rewritten form against a stub response:
+
+```
+ORIGINAL : Request error: FakeResp=HASH(0x55852a06e6e8)->status_line
+CORRIGIDO: Request error: 401 Unauthorized
+```
+
+Body in `patches/interpolacao-metodo.pl`.
+
+## Staggering the collectors (`tools/escalona-cron.sh`)
+
+The stock installation puts every collector on the same minute. On a live
+system that meant **15 LPAR2RRD processes firing at :00** and 6 STOR2RRD
+collectors together every 5 minutes — all of them writing JSON through the same
+`write_json`, while `load.sh` read the tree underneath them.
+
+The diagnostic bundle caught the result: 10 files under `tmp/restapi/` that
+would not decode, **every one of them an exact multiple of 4096 bytes** (1×, 2×,
+3×, 5×, 6×) — end of block, not end of JSON.
+
+Run as root; it only reports until given `--apply`, keeps a backup in
+`/var/tmp/`, verifies the rewritten crontab has the same number of lines and
+that only the minute fields changed, and leaves `load.sh` on its own minute
+because it aggregates what the others collect. Measured on that system:
+
+| crontab | worst minute, before | after |
+|---|---|---|
+| lpar2rrd | 16 collectors | 4 |
+| stor2rrd | 10 collectors | 6 (floor: a 5-minute interval has only 5 slots for 6 collectors — the script says so) |
+
+Staggering narrows the window; the atomic `write_json` closes the rest. Both
+together.
+
+## Diagnostic bundle (`tools/coleta-diagnostico.sh`)
+
+Run as root. It finds every LPAR2RRD and STOR2RRD tree on the machine — from the
+product users' home directories, the usual paths, and running processes — and
+packs what a remote diagnosis needs:
+
+| file | what it holds |
+|---|---|
+| `00-RESUMO.txt` | one screen: versions, free disk, bad JSON, top errors, stalled RRDs |
+| `02-edicao-e-patches.txt` | `premium()`/`get_lpar_num()`, the `html/.X` markers, and which fork fixes are in place |
+| `03-config/` | `*.cfg`, `hosts.json` — **every secret removed** |
+| `04-json-integridade.txt` | every `.json` under `data/`, `etc/`, `tmp/` that is empty or will not decode, with block-aligned sizes flagged as interrupted writes |
+| `05-logs/` | the tail of each log, plus a frequency count of error kinds |
+| `06-permissoes.txt` | owner and mode of what matters, the web user's groups, SELinux |
+| `07-rrd.txt` | RRD count per platform, zero-byte RRDs, RRDs stale for more than two days |
+| `10`, `11` | cron, running processes, Perl modules, rrdtool, web server, disk |
+
+**Redaction is unconditional.** Any `hosts.json` key whose name contains
+`pass`/`secret`/`token`/`key`/`cred` is replaced by `<REMOVIDO:N bytes>`;
+config and log lines with those terms, `Authorization:` headers, curl `-u`
+credentials and `user = "..."` strings are masked. `REDACAO.txt` counts the
+substitutions per file. Verified against three vectors — the cleartext
+password, its `hosts.json` obfuscation (base64 of uuencode, which is
+reversible), and a base64 `Authorization` header — none survives. Diagnostic
+lines are left intact: URLs, `ORA-` codes, file paths and parse errors are not
+touched.
+
+`-a` additionally maps hostnames and IPs to stable labels (`host001`, `ip001`)
+and writes the translation table **outside** the bundle. It makes the
+diagnosis harder, so it is off by default.
+
+The bundle still carries hostnames, IP addresses and instance names. It is
+internal material: it is not for a public repository.
+
