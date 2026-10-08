@@ -825,10 +825,20 @@ def carrega_fatos(g, base, extras=None):
 
     if conta["linhas"]:
         sys.stdout.write(
-            "topo-build: conexoes: %d linha(s) -> %d aresta(s) nova(s), "
-            "%d fundida(s) no mesmo par, %d no mesmo no, %d sem o outro lado\n"
-            % (conta["linhas"], conta["nova"], conta["fundida"],
+            "topo-build: conexoes: %d linha(s) de %d arquivo(s) agregado(s) -> "
+            "%d aresta(s) nova(s), %d fundida(s) no mesmo par, %d no mesmo no, "
+            "%d sem o outro lado\n"
+            % (conta["linhas"], len(agregados), conta["nova"], conta["fundida"],
                conta["mesmo_no"], conta["sem_remoto"] + conta["sem_no"]))
+        # O mesmo CSV subido em dois formatos le tudo duas vezes: as linhas
+        # repetidas caem todas em "fundida", que passa a ser maior do que o
+        # numero de linhas de uma copia. Sem dizer quantos arquivos entraram,
+        # isso parecia perda de arestas.
+        if len(agregados) > 1 and conta["fundida"] > conta["nova"]:
+            sys.stdout.write(
+                "topo-build: conexoes: ha mais fusoes do que arestas novas com "
+                "%d arquivos agregados - verifique se o mesmo conteudo foi "
+                "subido mais de uma vez em uploads/\n" % len(agregados))
 
     return len(por_host), serial_lparid
 
