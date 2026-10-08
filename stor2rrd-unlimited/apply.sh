@@ -828,6 +828,16 @@ add_topology() {
       }
     fi
     chmod +x "$S2R/topology/bin/"*.sh "$S2R/topology/bin/"*.py "$S2R/topology/cgi/"*.sh 2>/dev/null
+    # Instalado como root, o kit ficava root:root com o modo que vinha do
+    # pacote, e a coleta - que corre como o usuario do produto - batia em
+    # "Permission denied" ao abrir topo-inventory.py e lpar2rrd.py. O dono e o
+    # grupo passam a ser os do proprio produto, e o grupo ganha leitura.
+    dono=$(ls -ld "$S2R" | awk '{print $3}')
+    grupo=$(ls -ld "$S2R" | awk '{print $4}')
+    chown -R "$dono:$grupo" "$S2R/topology/bin" "$S2R/topology/cgi" 2>/dev/null || true
+    [ -d "$S2R/topology/collectors" ] &&
+      chown -R "$dono:$grupo" "$S2R/topology/collectors" 2>/dev/null || true
+    chmod -R g+rX "$S2R/topology/bin" "$S2R/topology/cgi" 2>/dev/null || true
     [ -f "$S2R/topology/topologia.json" ] || cp -p "$TOPO_SRC/topologia.json" "$S2R/topology/"
     echo "  installed: topology/ (builder, collectors, uploads)"
 
@@ -844,7 +854,12 @@ add_topology() {
       cat > "$S2R/bin/user_script_topology.sh" <<'SHIM'
 #!/bin/sh
 # Picked up by load.sh (bin/user_script*.sh); the work is in topology/bin.
-exec "${INPUTDIR:-$(cd "$(dirname "$0")/.." && pwd)}/topology/bin/user_script_topology.sh"
+# INPUTDIR tem de ser exportado, nao so usado para montar o caminho: quem corre
+# e o script de topology/bin, que fica um nivel mais fundo e, sem a variavel,
+# calcula o home dele proprio um nivel acima de onde deve.
+INPUTDIR=${INPUTDIR:-$(cd "$(dirname "$0")/.." && pwd)}
+export INPUTDIR
+exec "$INPUTDIR/topology/bin/user_script_topology.sh"
 SHIM
       chmod +x "$S2R/bin/user_script_topology.sh"
       echo "  collect  : bin/user_script_topology.sh (load.sh user-script hook)"

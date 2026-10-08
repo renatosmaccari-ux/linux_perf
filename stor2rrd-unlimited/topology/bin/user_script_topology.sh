@@ -10,7 +10,14 @@
 # Order matters: the inventory has to be re-read after the collectors have
 # refreshed data/, and the graph built after the inventory.
 
-INPUTDIR=${INPUTDIR:-$(cd "$(dirname "$0")/.." && pwd)}
+# Este script vive em <home>/topology/bin/, portanto o home fica dois niveis
+# acima - nao um. Com um so, rodado a mao, INPUTDIR virava <home>/topology e
+# tudo passava a ser procurado em <home>/topology/topology/: o build gravava
+# noutro sitio, a validacao dizia "nao existe" e o log ia para um ficheiro que
+# ninguem le. Pela coleta nao se notava, porque o load.sh exporta INPUTDIR.
+if [ -z "${INPUTDIR:-}" ]; then
+  INPUTDIR=$(cd "$(dirname "$0")/../.." && pwd)
+fi
 export INPUTDIR
 
 # Dois usuarios rodam este script: o do produto, pela coleta, e o do servidor
@@ -28,7 +35,7 @@ LOG="$INPUTDIR/logs/topology.log"
 # do log, qual versao deste gancho correu: uma copia de instalacao que nao
 # pegasse deixava o script antigo no lugar e o log parecia o de sempre, so com
 # mensagens que a versao nova ja nao emite.
-VERSAO="2026-10-08"
+VERSAO="2026-10-08b"
 
 # Nao basta o diretorio existir: dois usuarios rodam este script - o do produto
 # pela coleta e o do servidor web pelo CGI de importacao - e o log pertence a um
@@ -87,9 +94,14 @@ elif [ ! -s "$TOPO/topologia.json" ]; then
 else
   # so a mensagem, nao o traceback: a primeira linha de um traceback e
   # "Traceback (most recent call last):", que nao diz nada
+  # encoding explicito: topo-build grava com ensure_ascii=False, ou seja UTF-8
+  # cru, e open() sem encoding usa o locale. Sob o cron, sem LANG, o locale e
+  # POSIX e o codec e ASCII - a leitura morria no primeiro acentuado com
+  # UnicodeDecodeError e um mapa perfeitamente valido era recusado todo ciclo.
   erro_json=$("$PY" -c 'import json, sys
 try:
-    json.load(open(sys.argv[1]))
+    with open(sys.argv[1], encoding="utf-8") as f:
+        json.load(f)
 except Exception as e:
     sys.stderr.write("%s: %s" % (type(e).__name__, e))
 ' "$TOPO/topologia.json" 2>&1 >/dev/null)

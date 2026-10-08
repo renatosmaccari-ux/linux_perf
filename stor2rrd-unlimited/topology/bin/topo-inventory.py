@@ -44,8 +44,11 @@ def open_text(path):
     # interrompem a leitura com UnicodeDecodeError; errors="replace"
     # evita perder o LPAR inteiro por um caractere invalido.
     #
+    # encoding explicito: sem ele o codec vem do locale, e sob o cron (sem
+    # LANG) isso e ASCII - cada acentuado virava um caractere de substituicao
+    # e o nome do host chegava corrompido ao grafo, sem erro nenhum.
     if PY3:
-        return open(path, "r", errors="replace")
+        return open(path, "r", encoding="utf-8", errors="replace")
     return open(path, "r")
 
 
