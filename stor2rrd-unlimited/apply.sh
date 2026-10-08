@@ -765,6 +765,17 @@ add_topology() {
       && echo "  contained: html/topologia.html ($saida)" \
       || { echo "apply.sh: nao consegui conter a pagina: $saida" >&2; return 1; }
   fi
+  # Conter a pagina move o canvas: ele deixa de comecar no canto da janela e
+  # passa a comecar depois do menu do produto. As leituras de ev.clientX
+  # continuavam a trata-lo como se comecasse em zero, e o clique selecionava um
+  # no deslocado para a direita. Patch separado, com marca propria, para valer
+  # tambem numa pagina ja contida por uma instalacao anterior.
+  if [ -f "$SELF_DIR/patches/topologia-ponteiro.py" ]; then
+    saida=$(python3 "$SELF_DIR/patches/topologia-ponteiro.py" \
+              "$S2R/html/topologia.html" 2>&1) \
+      && echo "  pointer  : html/topologia.html ($saida)" \
+      || { echo "apply.sh: nao consegui corrigir o ponteiro: $saida" >&2; return 1; }
+  fi
 
   # never overwrite a map the site has already built
   [ -f "$S2R/html/topologia.json" ] || cp -p "$TOPO_SRC/topologia.json" "$S2R/html/"
