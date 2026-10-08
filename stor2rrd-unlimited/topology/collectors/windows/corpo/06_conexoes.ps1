@@ -7,8 +7,11 @@ Emit-Meta
 
 if ($AMOSTRAS -eq $null)  { $AMOSTRAS = 3 }
 if ($INTERVALO -eq $null) { $INTERVALO = 10 }
-$MAX_EDGE = 1200
-$LIMIAR_FANIN = 150
+# Tetos por host, agora vindos do ambiente com os mesmos valores por omissao:
+# num ambiente com gateways, o teto fixo descartava dezenas de milhares de
+# arestas e so a linha "truncado_entrada" do resumo o denunciava.
+$MAX_EDGE = if ($env:TOPO_MAX_EDGE) { [int]$env:TOPO_MAX_EDGE } else { 1200 }
+$LIMIAR_FANIN = if ($env:TOPO_LIMIAR_FANIN) { [int]$env:TOPO_LIMIAR_FANIN } else { 150 }
 $EFEMERA = 49152            # faixa dinamica padrao do Windows 2008+
 
 # ---------- identidade do no ----------
