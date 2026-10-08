@@ -223,13 +223,18 @@ class Grafo(object):
     def aresta(self, origem, destino, portas, evidencia, confianca, sessoes=0,
                tipo=None):
         s, t = self.resolve(origem), self.resolve(destino)
-        if not s or not t or s == t:
-            return
+        if not s or not t:
+            return "sem_no"
+        if s == t:
+            # os dois lados resolveram para o mesmo no: ou o host falou consigo
+            # proprio, ou dois IPs dele foram registados como do mesmo no
+            return "mesmo_no"
         for lado in (s, t):
             if lado not in self.nos:
                 self.nos[lado] = no_vazio(lado)
         chave = (s, t)
         a = self.arestas.get(chave)
+        nova = "nova" if a is None else "fundida"
         if a is None:
             a = {"s": s, "t": t, "p": [], "sv": [], "n": 0,
                  "ev": evidencia, "cf": confianca}
@@ -252,6 +257,7 @@ class Grafo(object):
             a["ev"] = "ambos"
         if confianca == "listen":
             a["cf"] = "listen"
+        return nova
 
     # -------------------------------------------------------------- saida
     # A pagina inteira e dirigida por "classe": e ela que da a cor, o raio, a
@@ -706,6 +712,11 @@ def carrega_fatos(g, base, extras=None):
     for host in linhas_por_host:
         por_host.setdefault(host, [])
 
+    # Contadores: sem eles, "o grafo tem menos ligacoes do que o CSV" nao tinha
+    # como ser respondido sem reproduzir o ambiente inteiro. Dizem quantas
+    # linhas de conexao entraram e o que aconteceu a cada uma.
+    conta = defaultdict(int)
+
     serial_lparid = {}          # (serial, lpar_id) -> id normalizado, para casar()
     for host, caminhos in sorted(por_host.items()):
         n = g.no(host, host)
@@ -770,18 +781,26 @@ def carrega_fatos(g, base, extras=None):
                                 portas_listen.append(porta)
                         elif esc in ("entrada", "cliente"):
                             # alguem se conectou a uma porta nossa: ele -> nos
+                            conta["linhas"] += 1
                             remoto, porta, ses, cf = _endpoint(chave, valor)
-                            if remoto:
-                                g.aresta(remoto, host, [porta] if porta else [],
-                                         "servidor", cf or _confianca(porta, True),
-                                         ses)
+                            if not remoto:
+                                conta["sem_remoto"] += 1
+                            else:
+                                conta[g.aresta(
+                                    remoto, host, [porta] if porta else [],
+                                    "servidor", cf or _confianca(porta, True),
+                                    ses)] += 1
                         elif esc in ("saida", "servidor"):
                             # nos conectamos a uma porta de alguem: nos -> ele
+                            conta["linhas"] += 1
                             remoto, porta, ses, cf = _endpoint(chave, valor)
-                            if remoto:
-                                g.aresta(host, remoto, [porta] if porta else [],
-                                         "cliente", cf or _confianca(porta, False),
-                                         ses)
+                            if not remoto:
+                                conta["sem_remoto"] += 1
+                            else:
+                                conta[g.aresta(
+                                    host, remoto, [porta] if porta else [],
+                                    "cliente", cf or _confianca(porta, False),
+                                    ses)] += 1
                         elif esc in ("fanin", "fanin_rede"):
                             # Acima de LIMIAR_FANIN clientes numa porta, o kit
                             # para de emitir aresta a aresta e resume: "porta P
@@ -803,6 +822,13 @@ def carrega_fatos(g, base, extras=None):
             n["fanin_rede"] = fanin_rede
         if serial and lpar_id:
             serial_lparid[(serial, lpar_id)] = norm_host(host)
+
+    if conta["linhas"]:
+        sys.stdout.write(
+            "topo-build: conexoes: %d linha(s) -> %d aresta(s) nova(s), "
+            "%d fundida(s) no mesmo par, %d no mesmo no, %d sem o outro lado\n"
+            % (conta["linhas"], conta["nova"], conta["fundida"],
+               conta["mesmo_no"], conta["sem_remoto"] + conta["sem_no"]))
 
     return len(por_host), serial_lparid
 
