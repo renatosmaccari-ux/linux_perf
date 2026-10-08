@@ -711,6 +711,7 @@ def carrega_fatos(g, base, extras=None):
         n = g.no(host, host)
         n["col"] = True
         portas_listen = []
+        fanin, fanin_rede = {}, {}
         serial = lpar_id = ""
 
         # cada arquivo por host, mais as linhas que vieram dos agregados
@@ -764,24 +765,42 @@ def carrega_fatos(g, base, extras=None):
                         if esc == "ip_local":
                             g.registra_ips(n, [valor])
                         elif esc in ("listen", "porta_listen"):
-                            porta = re.sub(r"\D", "", chave or valor)
+                            porta = _porta_de(chave, valor)
                             if porta and porta not in portas_listen:
                                 portas_listen.append(porta)
                         elif esc in ("entrada", "cliente"):
                             # alguem se conectou a uma porta nossa: ele -> nos
-                            remoto, porta, sessoes = _endpoint(chave, valor)
+                            remoto, porta, ses, cf = _endpoint(chave, valor)
                             if remoto:
                                 g.aresta(remoto, host, [porta] if porta else [],
-                                         "servidor", _confianca(porta, True), sessoes)
+                                         "servidor", cf or _confianca(porta, True),
+                                         ses)
                         elif esc in ("saida", "servidor"):
                             # nos conectamos a uma porta de alguem: nos -> ele
-                            remoto, porta, sessoes = _endpoint(chave, valor)
+                            remoto, porta, ses, cf = _endpoint(chave, valor)
                             if remoto:
                                 g.aresta(host, remoto, [porta] if porta else [],
-                                         "cliente", _confianca(porta, False), sessoes)
+                                         "cliente", cf or _confianca(porta, False),
+                                         ses)
+                        elif esc in ("fanin", "fanin_rede"):
+                            # Acima de LIMIAR_FANIN clientes numa porta, o kit
+                            # para de emitir aresta a aresta e resume: "porta P
+                            # teve N clientes distintos", e por rede /24. Nao ha
+                            # identidade do outro lado, entao nao vira ligacao -
+                            # mas era descartado sem deixar rasto, e justamente
+                            # nos servidores mais procurados do ambiente.
+                            alvo = fanin if esc == "fanin" else fanin_rede
+                            campos = str(valor or "").split("|")
+                            n_cli = campos[-1].strip() if campos else ""
+                            if n_cli.isdigit() and chave:
+                                alvo[chave.strip()] = int(n_cli)
 
         if portas_listen:
             n["lst"] = " ".join(sorted(portas_listen, key=lambda p: int(p)))
+        if fanin:
+            n["fanin"] = fanin
+        if fanin_rede:
+            n["fanin_rede"] = fanin_rede
         if serial and lpar_id:
             serial_lparid[(serial, lpar_id)] = norm_host(host)
 
@@ -809,19 +828,51 @@ def _confianca(porta, entrada):
     return "listen" if entrada else "porta"
 
 
+CONFIANCAS = ("listen", "porta", "efemera", "assumido")
+
+
 def _endpoint(chave, valor):
-    """O kit escreve o par remoto como "ip:porta" na chave e o numero de
-    sessoes no valor; aceita tambem "ip porta" e so "ip"."""
+    """Le o formato que o proprio kit escreve em 06_conexoes.
+
+        chave  ip|porta
+        valor  servico|ip_local|sessoes|amostras|estados|processo|confianca
+
+    O separador e a barra vertical, nao os dois pontos. A versao anterior
+    partia a chave em "[:\\s]+", portanto nunca a separava: o endpoint inteiro
+    - "10.219.8.209|443" - ia para norm_host(), que nao o reconhece como IP e
+    corta no primeiro ponto. Todas as conexoes de uma rede colapsavam num unico
+    no chamado "10", e como as arestas sao indexadas por (origem, destino),
+    milhares delas viravam uma so. A porta tambem se perdia, e sem porta
+    _confianca() devolvia "efemera" para tudo.
+
+    Aceita ainda "ip:porta" e "ip porta", de CSV montado a mao."""
+    campos = [c.strip() for c in str(valor or "").split("|")]
     sessoes = 0
-    m = re.search(r"\d+", valor or "")
-    if m:
-        sessoes = int(m.group())
-    partes = re.split(r"[:\s]+", (chave or "").strip())
+    if len(campos) >= 3 and campos[2].isdigit():
+        sessoes = int(campos[2])            # formato do kit
+    elif len(campos) == 1 and campos[0].isdigit():
+        sessoes = int(campos[0])            # valor que e so a contagem
+    # o coletor ja classificou a confianca olhando o socket; a conta refeita
+    # aqui so adivinha pela porta
+    confianca = ""
+    if len(campos) >= 7 and campos[6] in CONFIANCAS:
+        confianca = campos[6]
+
+    partes = [x for x in re.split(r"[|:\s]+", (chave or "").strip()) if x]
     remoto = partes[0] if partes else ""
     porta = ""
     if len(partes) > 1 and partes[1].isdigit():
         porta = partes[1]
-    return remoto, porta, sessoes
+    return remoto, porta, sessoes, confianca
+
+
+def _porta_de(chave, valor):
+    """A chave de um LISTEN e "ip_de_bind|porta". Tirar os nao-digitos da chave
+    inteira colava os octetos do bind na porta: 0.0.0.0|443 virava 0000443."""
+    partes = [x for x in re.split(r"[|:\s]+", (chave or "").strip()) if x]
+    if partes and partes[-1].isdigit():
+        return partes[-1]
+    return re.sub(r"\D", "", valor or "")
 
 
 # ====================================== 4. o que os produtos ja colecionaram

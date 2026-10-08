@@ -35,7 +35,7 @@ LOG="$INPUTDIR/logs/topology.log"
 # do log, qual versao deste gancho correu: uma copia de instalacao que nao
 # pegasse deixava o script antigo no lugar e o log parecia o de sempre, so com
 # mensagens que a versao nova ja nao emite.
-VERSAO="2026-10-08c"
+VERSAO="2026-10-08d"
 
 # Nao basta o diretorio existir: dois usuarios rodam este script - o do produto
 # pela coleta e o do servidor web pelo CGI de importacao - e o log pertence a um
