@@ -513,14 +513,29 @@ what it just wrote and fails the build unless it matches byte for byte.
 
 ## Install in place
 
+Every step past the edition module is opt-in, so a bare run installs only that
+one - no topology page, no vendor fixes, no permission work. For the whole
+fork, as root:
+
+```sh
+./apply.sh --fix-vendor-bugs --add-topology --fix-permissions /home/lpar2rrd/lpar2rrd
+```
+
+A bare run now prints which optional steps it skipped and this line to repeat.
+Individually:
+
 ```sh
 ./apply.sh /home/stor2rrd/stor2rrd            # rewrite the edition module
 ./apply.sh --fix-vendor-bugs /home/lpar2rrd/lpar2rrd   # + vendor bug workarounds
+./apply.sh --add-topology /home/lpar2rrd/lpar2rrd       # + the dependency-map page
 ./apply.sh --harden /home/stor2rrd/stor2rrd   # also raise residual literals to 9999
 ./apply.sh --fix-permissions /home/lpar2rrd/lpar2rrd    # + shared-tree permissions
 ./apply.sh --status /home/stor2rrd/stor2rrd   # report state
 ./apply.sh --revert /home/stor2rrd/stor2rrd   # undo everything
 ```
+
+Exit status is 1 when a step reported itself incomplete, even though the rest
+was installed; the warnings name which one.
 
 Run it as the `stor2rrd` / `lpar2rrd` user (or root). The home directory is
 auto-detected from `$XORUX_HOME`, `$STOR2RRD_HOME`, `$LPAR2RRD_HOME` or the

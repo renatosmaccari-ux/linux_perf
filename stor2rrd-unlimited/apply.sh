@@ -24,6 +24,11 @@
 #   ./apply.sh [--harden] [--fix-vendor-bugs] [--fix-permissions]
 #              [--add-topology] [--force]
 #              [<PRODUCT_HOME>]
+#
+#   Everything past the edition module is opt-in: a bare run installs that and
+#   nothing else. For the whole fork, as root:
+#     ./apply.sh --fix-vendor-bugs --add-topology --fix-permissions <HOME>
+#   A bare run says which optional steps it skipped.
 #   ./apply.sh --revert                                 [<PRODUCT_HOME>]
 #   ./apply.sh --status                                 [<PRODUCT_HOME>]
 #
@@ -74,7 +79,7 @@ for arg in "$@"; do
     --force)  FORCE=1 ;;
     --revert) MODE=revert ;;
     --status) MODE=status ;;
-    -h|--help) sed -n '3,42p' "$0"; exit 0 ;;
+    -h|--help) awk 'NR > 2 { if (/^#/) print; else exit }' "$0"; exit 0 ;;
     -*) echo "apply.sh: unknown option: $arg" >&2; exit 2 ;;
     *)  HOME_ARG="$arg" ;;
   esac
@@ -947,7 +952,8 @@ report_status() {
   for f in $VENDORFIX_FILES; do
     [ -f "$f.xoruxfork-orig" ] && echo "vendor fix    : ${f#$S2R/}"
   done
-  exit 0
+  # esta funcao e o fim do script: sair sempre 0 escondia um passo incompleto
+  exit "${RC_FINAL:-0}"
 }
 
 [ "$MODE" = status ] && report_status
@@ -1016,9 +1022,24 @@ perl -0777 -pe '
   # the STOR2RRD module has premium() only, so absence is normal; complain
   # only when the sub is there and the rewrite failed to take
   if ( /sub\s+get_lpar_num/ ) {
-    s/(sub\s+get_lpar_num\s*\{\s*return\s+)0\b/${1}1/
-      or warn "apply.sh: get_lpar_num() present but not rewritten, "
-            . "custom groups may stay capped\n";
+    # O fornecedor escreveu este corpo de mais de uma forma entre versoes
+    # (return 0, return(0), return "0") e por vezes com um bloco antes do
+    # retorno. Um unico literal exato deixava o limite de pe sem dizer o que
+    # encontrou, entao o corpo e isolado por chaves equilibradas e o retorno
+    # falso trocado dentro dele, onde quer que esteja.
+    my $feito = 0;
+    s{(sub\s+get_lpar_num\s*)(\{(?:[^{}]++|(?2))*\})}{
+      my ($cab, $corpo) = ($1, $2);
+      $feito = $corpo =~ s/(return\s*\(?\s*)(?:["]?0["]?|undef)(\s*\)?)/${1}1$2/;
+      $cab . $corpo;
+    }se;
+    unless ($feito) {
+      my ($corpo) = /(sub\s+get_lpar_num\s*(\{(?:[^{}]++|(?2))*\}))/s;
+      $corpo = defined $corpo ? $corpo : "nao consegui ler o corpo";
+      $corpo =~ s/\s+/ /g;
+      warn "apply.sh: get_lpar_num() present but not rewritten, custom "
+         . "groups may stay capped. Corpo encontrado: $corpo\n";
+    }
   }
   s{\A}{"# Modified by the '"$MARKER"': premium() returns a 6-character\n"
        . "# string and get_lpar_num() returns true - between them every\n"
@@ -1073,15 +1094,37 @@ if [ "$VENDORFIX" -eq 1 ]; then
     "diz o que da pagina Topologia falta e por que o grafo pode estar vazio"
 fi
 
+PARCIAL=0
 if [ "$ADDTOPO" -eq 1 ]; then
   echo "Installing the dependency-map page"
-  add_topology
-  registra_index
+  # Os tres passos sao independentes: a pagina, o registo no instalador da GUI
+  # e a entrada no painel Utilities. Chamados em cadeia, sob set -e, a falta do
+  # instalador - que add_topology sinaliza com return 1 - abortava o script
+  # inteiro: sem entrada no painel, sem abertura de permissoes e sem o relatorio
+  # final, e com codigo de saida 1 depois de dizer "installed". Agora cada um
+  # avisa e o resto continua.
+  add_topology   || { PARCIAL=1; echo "apply.sh: a pagina ficou instalada so em parte - veja os avisos acima" >&2; }
+  registra_index || { PARCIAL=1; echo "apply.sh: nao registei a entrada no painel Utilities" >&2; }
 fi
 
 if [ "$FIXPERMS" -eq 1 ]; then
   echo "Opening group access so the web server user can read the tree"
   fix_permissions
+fi
+
+# Os passos opcionais sao silenciosos quando nao se pedem, e um "sh apply.sh
+# <home>" sem opcoes instala apenas o modulo de edicao - sem a pagina do grafo,
+# sem as correcoes do produto e sem a abertura de permissoes. A saida parecia
+# um sucesso completo, entao diga o que ficou de fora e como pedir.
+omitidos=""
+[ "$VENDORFIX" -eq 1 ] || omitidos="$omitidos --fix-vendor-bugs"
+[ "$ADDTOPO"   -eq 1 ] || omitidos="$omitidos --add-topology"
+[ "$FIXPERMS"  -eq 1 ] || omitidos="$omitidos --fix-permissions"
+if [ -n "$omitidos" ]; then
+  echo
+  echo "Nao instalado (opcional, nao foi pedido):$omitidos"
+  echo "  para instalar tudo, como root:"
+  echo "  sh apply.sh --fix-vendor-bugs --add-topology --fix-permissions $S2R"
 fi
 
 # force the GUI to rebuild menu.txt so the edition flag flips to full
@@ -1107,6 +1150,13 @@ limpa_avisos() {
   return 0
 }
 limpa_avisos
+
+# report_status termina o script, entao o aviso vem antes dele
+RC_FINAL=0
+[ "$PARCIAL" -eq 0 ] || {
+  RC_FINAL=1
+  echo "apply.sh: terminou com passos incompletos (acima). O resto esta instalado." >&2
+}
 
 echo
 report_status
