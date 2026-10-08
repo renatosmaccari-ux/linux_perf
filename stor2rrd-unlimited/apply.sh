@@ -1079,8 +1079,12 @@ perl -0777 -pe '
       my ($corpo) = /(sub\s+get_lpar_num\s*(\{(?:[^{}]++|(?2))*\}))/s;
       $corpo = defined $corpo ? $corpo : "nao consegui ler o corpo";
       $corpo =~ s/\s+/ /g;
+      # Nao ha retorno falso para trocar quando o valor ja e verdadeiro: o
+      # modulo de origem pode ser um backup de uma instalacao anterior desta
+      # fork. Avisar ali era alarme falso - o limite ja estava levantado.
       warn "apply.sh: get_lpar_num() present but not rewritten, custom "
-         . "groups may stay capped. Corpo encontrado: $corpo\n";
+         . "groups may stay capped. Corpo encontrado: $corpo\n"
+        unless $corpo =~ /return\s*\(?\s*["]?[1-9]/;
     }
   }
   s{\A}{"# Modified by the '"$MARKER"': premium() returns a 6-character\n"
