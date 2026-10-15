@@ -241,8 +241,46 @@ if [ "$MODO" = teste ]; then
     done
   fi
   primeiro=$(awk 'NF && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9]/ {print $1; exit}' "$COLETA_HOSTS" 2>/dev/null)
-  echo "   teste manual de ponta a ponta (nao executado aqui):"
-  echo "     ssh -o BatchMode=yes -o ConnectTimeout=10 ${SSH_USER:-netuss}@${primeiro:-<host>} 'sudo -n true' && echo OK"
+
+  # Um ssh de verdade ao primeiro host da lista, com as MESMAS opcoes do
+  # collect.sh (SSHOPTS). Sem elas o teste usa o known_hosts do usuario e falha
+  # com "Host key verification failed" num host que a coleta alcanca sem
+  # problema: o collect.sh desliga a verificacao de chave de host, e por isso o
+  # known_hosts nunca importa para ele. So conecta e roda "sudo -n true".
+  # COLETA_TESTE_SSH=0 pula.
+  SSH_U="${SSH_USER:-netuss}"
+  SSH_OPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 -o ConnectionAttempts=1 -o PreferredAuthentications=publickey"
+  if [ "${COLETA_TESTE_SSH:-1}" != 1 ] || [ -z "$primeiro" ] || ! command -v ssh >/dev/null 2>&1; then
+    echo "   teste de ponta a ponta nao executado. Para fazer a mao, com as opcoes do coletor:"
+    echo "     ssh $SSH_OPTS $SSH_U@${primeiro:-<host>} 'sudo -n true' && echo OK"
+  else
+    saida=$(timeout 30 ssh $SSH_OPTS "$SSH_U@$primeiro" 'sudo -n true' 2>&1); rc=$?
+    baixo=$(printf '%s' "$saida" | tr 'A-Z' 'a-z')
+    if [ "$rc" -eq 0 ]; then
+      t_ok "ssh e sudo -n em $primeiro (como $SSH_U)"
+    else
+      # as mesmas classes que o collect.sh reconhece nas falhas
+      case "$baixo" in
+        *"illegal option"*|*"invalid option"*|*"unknown option"*)
+          if timeout 30 ssh $SSH_OPTS "$SSH_U@$primeiro" 'sudo true' >/dev/null 2>&1; then
+            t_ok "ssh e sudo em $primeiro (sudo antigo, sem -n: o coletor usa o fallback)"
+          else
+            t_falta "o sudo de $primeiro nao tem -n e o sudo puro tambem falhou para $SSH_U"
+          fi ;;
+        *"must have a tty"*|*"requiretty"*|*"a terminal is required"*)
+          t_aviso "o sudo de $primeiro exige tty: o coletor usa o fallback com ssh -tt" ;;
+        *"password is required"*|*"no tty present"*|*"askpass"*)
+          t_falta "o sudo de $primeiro pede senha a $SSH_U" "libere NOPASSWD para $SSH_U no sudoers de $primeiro" ;;
+        *"not in the sudoers"*|*"not allowed to execute"*|*"may not run sudo"*)
+          t_falta "$SSH_U nao tem permissao de sudo em $primeiro" ;;
+        *"permission denied"*)
+          t_falta "$primeiro recusou a chave de '$eu' para $SSH_U: $(printf '%s' "$saida" | head -1)" \
+                  "instale a chave publica de '$eu' em ~$SSH_U/.ssh/authorized_keys de $primeiro" ;;
+        *)
+          t_falta "ssh para $primeiro falhou (rc=$rc): $(printf '%s' "$saida" | head -1)" ;;
+      esac
+    fi
+  fi
 
   echo
   if [ "$FALTAS" -eq 0 ]; then
