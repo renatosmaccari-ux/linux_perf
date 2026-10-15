@@ -116,6 +116,19 @@ Para agendar, grave a saída de `-c` em `/etc/cron.d/xorux-topologia`. O usuári
 da linha é o que tem a chave SSH sem senha de `netuss` (hoje, quem roda o
 `run_all.sh` a mão). Não há agente SSH sob o cron: a chave não pode ter senha.
 
+**Cadência.** O `-c` imprime uma linha diária (01:37). Para outra, escreva a sua
+em `/etc/cron.d/xorux-topologia`; por exemplo, domingo às 23:59, como `netuss`:
+
+```
+59 23 * * 0 netuss /home/lpar2rrd/lpar2rrd/topology/bin/coleta-automatica.sh >/dev/null 2>&1
+```
+
+O `verifica-topologia.sh` deduz a cadência dessa linha (dia da semana fixo =
+semanal, dia do mês fixo = mensal, senão diária) e só acusa "o agendamento
+parou?" depois de um intervalo e meio. `COLETA_INTERVALO_DIAS` sobrepõe a dedução.
+Uma coleta que começa às 23:59 termina depois da meia-noite; o estado registra a
+hora em que a execução *terminou*.
+
 **Só importa o que passou na validação.** Se menos de `COLETA_MIN_PCT` (70%) dos
 hosts esperados responderam - a lista, menos os Windows que o `run_all` detectou
 por TTL - o mapa anterior é mantido, o estado vira `falha` e o motivo vai para

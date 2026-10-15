@@ -160,6 +160,27 @@ CA="$INPUTDIR/topology/bin/coleta-automatica.sh"
 if [ ! -f "$CA" ]; then
   aviso "coleta-automatica.sh nao instalado (pacote anterior a 2026-10-15)"
 else
+  # Onde procurar o agendamento. CRON_ARQS existe para teste.
+  CRON_ARQS="${CRON_ARQS:-/etc/cron.d/* /var/spool/cron/* /var/spool/cron/crontabs/*}"
+  # A cadencia vem da propria linha do cron. O limite de "parou?" era fixo em
+  # 36h, certo para uma coleta diaria e errado para qualquer outra: uma semanal
+  # seria acusada de parada de segunda a sabado, toda semana. COLETA_INTERVALO_DIAS
+  # sobrepoe a deducao. Os cinco primeiros campos sao os mesmos no /etc/cron.d
+  # (que tem usuario depois) e no crontab de usuario.
+  # shellcheck disable=SC2086
+  LINHA_CRON=$(grep -hs "coleta-automatica" $CRON_ARQS 2>/dev/null | grep -v '^[[:space:]]*#' | head -1)
+  INTERVALO="${COLETA_INTERVALO_DIAS:-}"
+  if [ -z "$INTERVALO" ]; then
+    INTERVALO=1
+    if [ -n "$LINHA_CRON" ]; then
+      c_dom=$(echo "$LINHA_CRON" | awk '{print $3}')
+      c_dow=$(echo "$LINHA_CRON" | awk '{print $5}')
+      if [ "$c_dom" != "*" ]; then INTERVALO=31       # dia do mes fixo: mensal
+      elif [ "$c_dow" != "*" ]; then INTERVALO=7      # dia da semana fixo: semanal (pior caso)
+      fi
+    fi
+  fi
+  LIMITE_H=$(( INTERVALO * 24 + 12 ))                 # uma execucao atrasada de meio dia ainda e normal
   ST="$INPUTDIR/topology/facts/coleta-auto.status"
   if [ -r "$ST" ]; then
     r=$(sed -n 's/^resultado=//p' "$ST"); q=$(sed -n 's/^quando=//p' "$ST")
@@ -170,17 +191,17 @@ else
       atencao) falta "ultima execucao $q importou, mas o mapa ficou '$m': $d" ;;
       *)       falta "ultima execucao $q FALHOU: $d" ;;
     esac
-    # a idade conta: uma coleta noturna que parou ha uma semana nao da erro nenhum
+    # a idade conta: uma coleta agendada que parou nao da erro nenhum
     idade=$(( $(date +%s) - $(date -d "$q" +%s 2>/dev/null || echo 0) ))
-    if [ "$idade" -gt 129600 ] && [ "$idade" -lt 4000000000 ]; then
-      falta "a ultima execucao foi ha $(( idade / 3600 ))h - o agendamento parou?"
+    if [ "$idade" -gt $(( LIMITE_H * 3600 )) ] && [ "$idade" -lt 4000000000 ]; then
+      falta "a ultima execucao foi ha $(( idade / 3600 ))h (cadencia de $INTERVALO dia(s), limite ${LIMITE_H}h) - o agendamento parou?"
     fi
   else
     aviso "a coleta automatica nunca rodou (sem $ST)"
   fi
   # agendamento: cron.d, crontab do usuario ou de root
-  if grep -qs "coleta-automatica" /etc/cron.d/* /var/spool/cron/* /var/spool/cron/crontabs/* 2>/dev/null; then
-    ok "agendamento encontrado no cron"
+  if [ -n "$LINHA_CRON" ]; then
+    ok "agendamento encontrado no cron (cadencia deduzida: $INTERVALO dia(s))"
   else
     aviso "nenhum agendamento no cron. Para ver a linha: sh $CA -c"
   fi
