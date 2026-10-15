@@ -35,7 +35,7 @@ LOG="$INPUTDIR/logs/topology.log"
 # do log, qual versao deste gancho correu: uma copia de instalacao que nao
 # pegasse deixava o script antigo no lugar e o log parecia o de sempre, so com
 # mensagens que a versao nova ja nao emite.
-VERSAO="2026-10-08e"
+VERSAO="2026-10-15"
 
 # Nao basta o diretorio existir: dois usuarios rodam este script - o do produto
 # pela coleta e o do servidor web pelo CGI de importacao - e o log pertence a um
@@ -53,6 +53,49 @@ fi
 
 # python3 only: the builder reads files with an explicit encoding. The
 # inventory extractor still runs on 2.7, but there is no point splitting them.
+# Uma reconstrucao por vez. Este gancho roda no fim de cada ciclo de coleta do
+# produto, e agora tambem ao fim da coleta automatica: duas execucoes juntas
+# escreviam o mesmo topologia.json.novo, e a segunda a renomear encontrava o
+# arquivo ja levado. A que chega com a outra em andamento sai (o ciclo do
+# produto) ou espera (TOPO_ESPERAR, em segundos: a coleta automatica).
+#
+# A trava e uma gentileza, nao um requisito: se nao for possivel cria-la - sem
+# permissao em tmp/, por exemplo - a reconstrucao segue sem ela em vez de
+# deixar de rodar.
+TRAVA="$INPUTDIR/tmp/topology-build.lock"
+_espera=${TOPO_ESPERAR:-0}
+_orfas=0
+_tem_trava=0
+mkdir -p "$INPUTDIR/tmp" 2>/dev/null
+while :; do
+  if mkdir "$TRAVA" 2>/dev/null; then
+    echo $$ > "$TRAVA/pid" 2>/dev/null
+    _tem_trava=1
+    break
+  fi
+  _dono=$(cat "$TRAVA/pid" 2>/dev/null)
+  # kill -0 falha com EPERM quando o dono e outro usuario: /proc desempata
+  if [ -n "$_dono" ] && { kill -0 "$_dono" 2>/dev/null || [ -d "/proc/$_dono" ]; }; then
+    if [ "$_espera" -gt 0 ]; then
+      _espera=$((_espera - 5))
+      sleep 5
+      continue
+    fi
+    echo "topology: outra reconstrucao em andamento (pid $_dono), esta fica para o proximo ciclo."
+    { echo "$(date '+%Y-%m-%d %H:%M:%S') topology: pulada, outra reconstrucao em andamento (pid $_dono)" >> "$LOG"; } 2>/dev/null
+    exit 0
+  fi
+  _orfas=$((_orfas + 1))
+  if [ "$_orfas" -gt 3 ]; then
+    break                       # nao da para criar a trava: segue sem ela
+  fi
+  rm -rf "${TRAVA:?}" 2>/dev/null
+done
+if [ "$_tem_trava" -eq 1 ]; then
+  trap 'rm -rf "${TRAVA:?}"' EXIT
+  trap 'exit 130' INT TERM
+fi
+
 PY=""
 # TOPO_PY permite apontar um python3 fora do PATH (SCL, /opt, ...): basta
 # defini-la em etc/.magic, que o load.sh carrega.

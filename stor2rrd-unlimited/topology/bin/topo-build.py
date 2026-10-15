@@ -179,6 +179,7 @@ class Grafo(object):
         self.rotulo = {}        # id normalizado -> id de exibicao
         self.por_ip = {}        # ip -> id normalizado
         self.arestas = {}       # (s,t) -> aresta
+        self.fundidos = 0
 
     # ---------------------------------------------------------------- nos
     def no(self, ident, exibicao=None):
@@ -260,6 +261,83 @@ class Grafo(object):
         return nova
 
     # -------------------------------------------------------------- saida
+    # Um endpoint que chega como IP vira um no chamado pelo IP quando o dono
+    # desse IP ainda nao e conhecido. As fontes sao lidas em ordem - hosts
+    # coletados por nome, depois baseline, depois inventario - e cada host so
+    # registra os seus IPs ao ser lido: a conexao de srv01 com o IP de srv02
+    # criava o no "10.1.0.2" meia hora antes de srv02 aparecer, e os dois ficavam
+    # no mapa, o IP com as ligacoes e o host sem elas.
+    #
+    # No fim todos os IPs ja foram registrados, entao cada no que e so um IP
+    # conhecido de outro no e fundido nele: as ligacoes passam a ele e os dados
+    # que o no-IP trouxer entram onde o host nao tiver nada.
+    def _funde_ips(self):
+        def dono(ip):
+            atual, vistos = ip, set()
+            while True:
+                alvo = self.por_ip.get(atual)
+                if not alvo or alvo == atual or alvo in vistos or alvo not in self.nos:
+                    return atual
+                vistos.add(atual)
+                atual = alvo
+                if not IP_RE.match(atual):
+                    return atual
+
+        mapa = {}
+        for chave in list(self.nos):
+            if IP_RE.match(chave):
+                d = dono(chave)
+                if d != chave:
+                    mapa[chave] = d
+        if not mapa:
+            return 0
+
+        for velho, novo in mapa.items():
+            v = self.nos.pop(velho, None)
+            alvo = self.nos.get(novo)
+            self.rotulo.pop(velho, None)
+            if v is None or alvo is None:
+                continue
+            for campo, valor in v.items():
+                if campo in ("id", "gi", "go"):
+                    continue
+                if campo == "ips":
+                    self.registra_ips(alvo, valor.split())
+                elif campo == "zonas_decl":
+                    for z in valor:
+                        if z not in alvo["zonas_decl"]:
+                            alvo["zonas_decl"].append(z)
+                elif campo == "col":
+                    alvo["col"] = bool(alvo.get("col") or valor)
+                elif valor and not alvo.get(campo):
+                    alvo[campo] = valor
+
+        novas = {}
+        for (s_, t_), a in self.arestas.items():
+            s2, t2 = mapa.get(s_, s_), mapa.get(t_, t_)
+            if s2 == t2:
+                continue            # os dois lados eram o mesmo host
+            a["s"], a["t"] = s2, t2
+            b = novas.get((s2, t2))
+            if b is None:
+                novas[(s2, t2)] = a
+                continue
+            for p in a["p"]:
+                if p not in b["p"]:
+                    b["p"].append(p)
+            for p in a["sv"]:
+                if p not in b["sv"]:
+                    b["sv"].append(p)
+            b["n"] += a["n"]
+            if b["ev"] != a["ev"]:
+                b["ev"] = "ambos"
+            if a["cf"] == "listen":
+                b["cf"] = "listen"
+            if a.get("tipo") and not b.get("tipo"):
+                b["tipo"] = a["tipo"]
+        self.arestas = novas
+        return len(mapa)
+
     # A pagina inteira e dirigida por "classe": e ela que da a cor, o raio, a
     # entrada na legenda, cada filtro e cada contador do cabecalho. Sem ela o
     # mapa saia monocromatico e o resumo dizia "0 cloud - 0 Windows - 0 hosts
@@ -319,6 +397,7 @@ class Grafo(object):
             # com a cor neutra.
 
     def json(self):
+        self.fundidos = self._funde_ips()
         for a in self.arestas.values():
             self.nos[a["s"]]["go"] += 1
             self.nos[a["t"]]["gi"] += 1
@@ -1076,6 +1155,9 @@ def main():
           "%d de data/ (%d ligacoes), "
           "%d LPAR do Power, %d hosts coletados, %d linhas de baseline"
           % (n_db, a_db, n_arv, a_arv, n_inv, n_con, n_bas))
+    if getattr(g, "fundidos", 0):
+        print("topo-build: %d no(s) que eram so um IP conhecido de outro host "
+              "foram fundidos a ele" % g.fundidos)
     print("topo-build: %d nos, %d ligacoes -> %s"
           % (len(dados["nodes"]), len(dados["links"]), saida))
     return 0

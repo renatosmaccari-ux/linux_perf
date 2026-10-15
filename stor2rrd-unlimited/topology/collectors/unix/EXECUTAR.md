@@ -97,6 +97,59 @@ Quantas arestas foram descartadas na última coleta:
 grep -h "conexao,resumo,truncado" coleta_*/06_conexoes.csv | sort -u
 ```
 
+### Automatizar: coleta, importação e mapa
+
+`../../bin/coleta-automatica.sh` encadeia o que antes era manual: roda o
+`run_all.sh`, publica os CSV de coleta no grafo e reconstrói o mapa.
+
+```sh
+sh ../../bin/coleta-automatica.sh -p          # piloto: 5 hosts, NAO importa
+sh ../../bin/coleta-automatica.sh -i          # importa a coleta_* mais recente já feita
+sh ../../bin/coleta-automatica.sh -i coleta_20261008_161123
+sh ../../bin/coleta-automatica.sh             # coleta completa + importa + reconstrói
+sh ../../bin/coleta-automatica.sh -s          # estado da última execução
+sh ../../bin/coleta-automatica.sh -c          # linha de agendamento para o cron
+```
+
+Para agendar, grave a saída de `-c` em `/etc/cron.d/xorux-topologia`. O usuário
+da linha é o que tem a chave SSH sem senha de `netuss` (hoje, quem roda o
+`run_all.sh` a mão). Não há agente SSH sob o cron: a chave não pode ter senha.
+
+**Só importa o que passou na validação.** Se menos de `COLETA_MIN_PCT` (70%) dos
+hosts esperados responderam - a lista, menos os Windows que o `run_all` detectou
+por TTL - o mapa anterior é mantido, o estado vira `falha` e o motivo vai para
+`logs/topology-coleta.log`. Uma noite de SSH fora do ar não esvazia o grafo.
+
+**O que entra no grafo:** os seis `01..06_*.csv`. Ficam de fora
+`00_consolidado.csv` (repete todos os outros), `07_hmc.csv` (o builder não lê
+esse formato), `*_falhas`, `*_windows` e `*_identidade`.
+
+Cada coleta vai para `topology/facts/coleta.d/<data>/`, e `facts/coleta-auto` é
+um link para a versão em uso, trocado com um único `rename`. Ficam as últimas
+`COLETA_GUARDAR` (3) coletas, aqui e no kit.
+
+Ajustes, por variável de ambiente ou em `topology/coleta.conf` (sh):
+
+| variável | padrão | |
+|---|---|---|
+| `COLETA_HOSTS` | `servidores_unix.txt` deste diretório | lista de servidores |
+| `COLETA_JOBS` | 8 | paralelismo do `run_all` |
+| `COLETA_LIMITE` | 14400 | teto de duração, em segundos |
+| `COLETA_MIN_PCT` | 70 | mínimo de hosts respondendo para importar |
+| `COLETA_GUARDAR` | 3 | coletas mantidas em disco |
+| `TOPO_MAX_EDGE` | 6000 | conexões por host e direção (o kit sozinho usa 1200) |
+
+**Coletas subidas pela tela de importação** continuam somando ao mapa. Se forem
+as mesmas desta rotina, as sessões são contadas duas vezes: o log avisa quais
+arquivos de `topology/uploads/` são coletas e podem ser removidos.
+
+**Windows** não entra: `coletar_windows.ps1` roda num bastion Windows. Ele grava
+o mesmo formato (`hostname,categoria,item,chave,valor`), então os `NN_*.csv`
+podem ser copiados para `topology/facts/windows/`, que o builder também lê.
+Copie **só os `NN_nome.csv`** (inclusive `07_hyperv.csv`). `00_consolidado.csv`
+repete todos eles, e `*_falhas.csv` e `identidade_divergente.csv` não são fatos:
+no mesmo diretório, duplicariam as sessões ou virariam hosts com nome de arquivo.
+
 Piloto obrigatório com pelo menos um host de cada família:
 
 ```sh

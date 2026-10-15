@@ -851,6 +851,10 @@ add_topology() {
     chmod -R g+rX "$S2R/topology/bin" "$S2R/topology/cgi" 2>/dev/null || true
     [ -f "$S2R/topology/topologia.json" ] || cp -p "$TOPO_SRC/topologia.json" "$S2R/topology/"
     echo "  installed: topology/ (builder, collectors, uploads)"
+    if [ -f "$S2R/topology/bin/coleta-automatica.sh" ]; then
+      echo "  automation: topology/bin/coleta-automatica.sh - para agendar a coleta:"
+      echo "              sh $S2R/topology/bin/coleta-automatica.sh -c"
+    fi
 
     # the CGI that takes spreadsheets
     if [ -d "$CGIDIR" ]; then

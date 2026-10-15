@@ -155,6 +155,41 @@ for f in "$INPUTDIR/bin/user_script_topology.sh" "$INPUTDIR/topology/bin/user_sc
 done
 
 echo
+echo "-- coleta automatica --"
+CA="$INPUTDIR/topology/bin/coleta-automatica.sh"
+if [ ! -f "$CA" ]; then
+  aviso "coleta-automatica.sh nao instalado (pacote anterior a 2026-10-15)"
+else
+  ST="$INPUTDIR/topology/facts/coleta-auto.status"
+  if [ -r "$ST" ]; then
+    r=$(sed -n 's/^resultado=//p' "$ST"); q=$(sed -n 's/^quando=//p' "$ST")
+    h=$(sed -n 's/^hosts_ok=//p' "$ST");  e=$(sed -n 's/^hosts_esperados=//p' "$ST")
+    m=$(sed -n 's/^mapa=//p' "$ST");      d=$(sed -n 's/^detalhe=//p' "$ST")
+    case "$r" in
+      ok)      ok "ultima execucao $q: $h de $e hosts, mapa $m" ;;
+      atencao) falta "ultima execucao $q importou, mas o mapa ficou '$m': $d" ;;
+      *)       falta "ultima execucao $q FALHOU: $d" ;;
+    esac
+    # a idade conta: uma coleta noturna que parou ha uma semana nao da erro nenhum
+    idade=$(( $(date +%s) - $(date -d "$q" +%s 2>/dev/null || echo 0) ))
+    if [ "$idade" -gt 129600 ] && [ "$idade" -lt 4000000000 ]; then
+      falta "a ultima execucao foi ha $(( idade / 3600 ))h - o agendamento parou?"
+    fi
+  else
+    aviso "a coleta automatica nunca rodou (sem $ST)"
+  fi
+  # agendamento: cron.d, crontab do usuario ou de root
+  if grep -qs "coleta-automatica" /etc/cron.d/* /var/spool/cron/* /var/spool/cron/crontabs/* 2>/dev/null; then
+    ok "agendamento encontrado no cron"
+  else
+    aviso "nenhum agendamento no cron. Para ver a linha: sh $CA -c"
+  fi
+  if [ -L "$INPUTDIR/topology/facts/coleta-auto" ]; then
+    ok "importacao em uso: $(readlink "$INPUTDIR/topology/facts/coleta-auto")"
+  fi
+fi
+
+echo
 echo "-- menu --"
 M="$INPUTDIR/tmp/menu.txt"
 if [ -f "$M" ]; then
