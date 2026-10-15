@@ -7,3 +7,7 @@
 # Editor/OS cruft
 .DS_Store
 *.swp
+
+# Delivery tarballs built for the site. They carry the built topology page
+# and are handed over privately - this repository is public.
+/xorux-unlimited-*.tar.gz

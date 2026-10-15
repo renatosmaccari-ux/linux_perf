@@ -1,0 +1,5 @@
+# Um alvo por linha: hostname ou IP alcancavel por WinRM a partir deste servidor.
+# Copie para lista_windows.txt e preencha com o seu parque.
+#
+# WINSRV01
+# winsrv02.dominio.interno

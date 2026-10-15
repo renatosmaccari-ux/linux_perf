@@ -1,0 +1,7 @@
+# Um alvo por linha: hostname ou IP alcancavel por SSH a partir deste servidor.
+# Copie para servidores_unix.txt e preencha com o seu parque.
+#   ./run_all.sh -l servidores_unix.txt -j 6
+#
+# servidor01
+# servidor02.dominio.interno
+# 10.0.0.15
