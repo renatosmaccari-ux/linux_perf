@@ -109,6 +109,7 @@ sh ../../bin/coleta-automatica.sh -i coleta_20261008_161123
 sh ../../bin/coleta-automatica.sh             # coleta completa + importa + reconstrói
 sh ../../bin/coleta-automatica.sh -s          # estado da última execução
 sh ../../bin/coleta-automatica.sh -c          # linha de agendamento para o cron
+sh ../../bin/coleta-automatica.sh -t          # testa as permissoes do usuario que o roda
 ```
 
 Para agendar, grave a saída de `-c` em `/etc/cron.d/xorux-topologia`. O usuário
@@ -138,6 +139,28 @@ Ajustes, por variável de ambiente ou em `topology/coleta.conf` (sh):
 | `COLETA_MIN_PCT` | 70 | mínimo de hosts respondendo para importar |
 | `COLETA_GUARDAR` | 3 | coletas mantidas em disco |
 | `TOPO_MAX_EDGE` | 6000 | conexões por host e direção (o kit sozinho usa 1200) |
+
+**Rodando como outro usuário** (por exemplo `netuss`, no cron). O que ele precisa:
+
+1. Estar no grupo do produto (`usermod -aG stor2rrd netuss`) ou ser o dono.
+   O cron lê os grupos a cada execução: não precisa reiniciar o `crond`.
+2. Atravessar todos os diretórios até o produto. No Oracle Linux 7 o `/home/<usuario>`
+   nasce com modo 700, o que bloqueia qualquer outro usuário.
+3. Gravar em `collectors/unix` (o `run_all.sh` cria `coleta_*` ali), `topology/facts`,
+   `topology`, `tmp` e `logs`. O `apply.sh --fix-permissions` deixa tudo isso com
+   escrita de grupo e setgid.
+4. Ter a chave SSH **dele** em `~/.ssh`, sem senha: o `collect.sh` usa a chave
+   padrão de quem o roda, em `BatchMode`, e não há agente SSH sob o cron.
+
+Em vez de conferir à mão, rode o teste como esse usuário. Ele tenta cada escrita
+de verdade e diz o que corrigir:
+
+```sh
+su -s /bin/sh netuss -c 'sh /home/lpar2rrd/lpar2rrd/topology/bin/coleta-automatica.sh -t'
+```
+
+Se o caminho até o produto estiver bloqueado, o teste para ali e aponta o
+diretório - as demais verificações só fazem sentido depois dele.
 
 **Coletas subidas pela tela de importação** continuam somando ao mapa. Se forem
 as mesmas desta rotina, as sessões são contadas duas vezes: o log avisa quais

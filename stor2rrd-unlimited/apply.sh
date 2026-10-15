@@ -849,6 +849,14 @@ add_topology() {
     [ -d "$S2R/topology/collectors" ] &&
       chown -R "$dono:$grupo" "$S2R/topology/collectors" 2>/dev/null || true
     chmod -R g+rX "$S2R/topology/bin" "$S2R/topology/cgi" 2>/dev/null || true
+    # O run_all.sh cria coleta_<data>/ no proprio diretorio do kit, e o
+    # collect.sh grava o trabalho dentro dele. Sem escrita de grupo ali, quem
+    # roda a coleta e outro usuario que nao o dono - o do agendamento, por
+    # exemplo - morre logo no mkdir, antes do primeiro host. g+s pelo mesmo
+    # motivo dos outros: o que ele criar herda o grupo do produto.
+    for d in "$S2R/topology/collectors" "$S2R/topology/collectors/unix"; do
+      [ -d "$d" ] && chmod g+ws "$d" 2>/dev/null
+    done
     [ -f "$S2R/topology/topologia.json" ] || cp -p "$TOPO_SRC/topologia.json" "$S2R/topology/"
     echo "  installed: topology/ (builder, collectors, uploads)"
     if [ -f "$S2R/topology/bin/coleta-automatica.sh" ]; then
@@ -968,6 +976,11 @@ fix_permissions() {
 
   for d in etc/web_config tmp logs; do
     [ -d "$S2R/$d" ] && chmod g+w "$S2R/$d" && echo "  applied : chmod g+w $d"
+  done
+  # g+s em tmp e logs: a trava e o log de quem roda a coleta agendada nascem com
+  # o grupo primario dele, e sem isto o usuario do produto nao os regrava
+  for d in tmp logs; do
+    [ -d "$S2R/$d" ] && chmod g+s "$S2R/$d" && echo "  applied : chmod g+s $d"
   done
 
   # the CGI also has to traverse every directory above the tree to reach it

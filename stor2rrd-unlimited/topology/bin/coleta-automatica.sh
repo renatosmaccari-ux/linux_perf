@@ -14,6 +14,7 @@
 #   coleta-automatica.sh -p            piloto: coleta 5 hosts e NAO importa
 #   coleta-automatica.sh -s            estado da ultima execucao
 #   coleta-automatica.sh -c            imprime a linha de agendamento (cron)
+#   coleta-automatica.sh -t            testa as permissoes do usuario que o roda
 #
 # Ajustes, por ambiente ou em topology/coleta.conf (sh, lido se existir):
 #   COLETA_HOSTS     lista de servidores        (collectors/unix/servidores_unix.txt)
@@ -72,13 +73,14 @@ log() {
 
 # ----------------------------------------------------------------- opcoes
 MODO=completo
-while getopts "ipsch" o; do
+while getopts "ipscht" o; do
   case "$o" in
     i) MODO=importar ;;
     p) MODO=piloto ;;
     s) MODO=estado ;;
     c) MODO=cron ;;
-    *) sed -n '2,31p' "$0"; exit 2 ;;
+    t) MODO=teste ;;
+    *) sed -n '2,32p' "$0"; exit 2 ;;
   esac
 done
 shift $((OPTIND - 1))
@@ -103,6 +105,152 @@ if [ "$MODO" = cron ]; then
 37 1 * * * $eu $TOPO/bin/coleta-automatica.sh >/dev/null 2>&1
 CRON
   exit 0
+fi
+
+# ------------------------------------------------------------ teste de acesso
+# Responde "isto vai funcionar como este usuario?" sem coletar nada. Rode como o
+# usuario do agendamento:
+#   su -s /bin/sh <usuario> -c 'sh .../topology/bin/coleta-automatica.sh -t'
+# Cada escrita e tentada de verdade (cria e apaga um arquivo): ACL, sistema de
+# arquivos somente leitura e grupos que o usuario acabou de ganhar aparecem aqui
+# e nao aparecem em [ -w ].
+if [ "$MODO" = teste ]; then
+  FALTAS=0
+  t_ok()    { printf '  [ ok ]  %s\n' "$1"; }
+  t_aviso() { printf '  [ !! ]  %s\n' "$1"; }
+  t_falta() {
+    printf '  [FALTA] %s\n' "$1"
+    [ -n "${2:-}" ] && printf '          corrigir, como root: %s\n' "$2"
+    FALTAS=$((FALTAS + 1))
+  }
+  eu=$(id -un)
+  grupo=$(ls -ld "$INPUTDIR" 2>/dev/null | awk '{print $4}')
+  dono=$(ls -ld "$INPUTDIR" 2>/dev/null | awk '{print $3}')
+
+  echo "== acesso de '$eu' a $INPUTDIR =="
+  echo "   grupos: $(id -Gn)"
+
+  # De cima para baixo, e para no primeiro bloqueio: um diretorio so pode ser
+  # testado se todos os de cima podem ser atravessados. Testar de baixo para
+  # cima listava como bloqueados tambem os que estao certos, e mandava corrigir
+  # permissao que nao tinha defeito.
+  echo "-- caminho ate o produto --"
+  ancestrais=""; d="$INPUTDIR"
+  while [ -n "$d" ] && [ "$d" != "/" ]; do
+    ancestrais="$d $ancestrais"
+    d=$(dirname "$d")
+  done
+  bloqueado=""
+  for d in $ancestrais; do
+    if [ ! -x "$d" ]; then bloqueado="$d"; break; fi
+  done
+  if [ -n "$bloqueado" ]; then
+    t_falta "$eu nao atravessa $bloqueado" \
+            "chmod g+x $bloqueado   (ou o+x, se o usuario nao estiver no grupo do produto)"
+    echo
+    echo "As demais verificacoes dependem deste caminho e nao foram feitas."
+    echo "Corrija e rode -t de novo."
+    exit 1
+  fi
+  t_ok "todos os diretorios ate $INPUTDIR sao atravessaveis"
+
+  if [ "$eu" = "$dono" ]; then
+    t_ok "e o dono do produto"
+  elif id -Gn | tr ' ' '\n' | grep -qx "$grupo"; then
+    t_ok "esta no grupo $grupo, que e o do produto"
+  else
+    t_falta "nao e o dono ($dono) nem esta no grupo $grupo: so enxerga o que e publico e nao escreve em nada" \
+            "usermod -aG $grupo $eu"
+  fi
+
+  echo "-- leitura --"
+  for f in "$COLETA_HOSTS" "$KIT/run_all.sh" "$KIT/collect.sh" "$HOOK" "$TOPO/bin/topo-build.py" \
+           "$TOPO/bin/topo-inventory.py" "$TOPO/bin/lpar2rrd.py"; do
+    if [ -r "$f" ]; then t_ok "le $(printf '%s' "$f" | sed "s|$INPUTDIR/||")"
+    else t_falta "nao le $f" "chmod g+r $f"; fi
+  done
+  if [ -r "$INPUTDIR/data" ] && [ -x "$INPUTDIR/data" ]; then t_ok "le data/ (o inventario do LPAR2RRD)"
+  else t_falta "nao le $INPUTDIR/data" "chmod -R g+rX $INPUTDIR/data"; fi
+
+  echo "-- escrita (cria e apaga um arquivo de teste) --"
+  tenta_gravar() {  # $1 diretorio  $2 rotulo  $3 correcao
+    [ -d "$1" ] || { t_aviso "$2: $1 ainda nao existe (sera criado)"; return; }
+    _a="$1/.coleta-teste.$$"
+    if { printf "" > "$_a"; } 2>/dev/null; then
+      rm -f "$_a"; t_ok "grava em $2"
+    else
+      t_falta "nao grava em $2 ($1)" "$3"
+    fi
+  }
+  tenta_gravar "$KIT" "collectors/unix (o run_all cria coleta_* aqui)" "chmod g+ws $KIT"
+  tenta_gravar "$FACTS" "topology/facts" "chmod g+ws $FACTS"
+  [ -d "$VERSOES" ] && tenta_gravar "$VERSOES" "topology/facts/coleta.d" "chmod -R g+rwX $VERSOES"
+  tenta_gravar "$TOPO" "topology (o mapa novo e gravado aqui)" "chmod g+ws $TOPO"
+  tenta_gravar "$INPUTDIR/tmp" "tmp (travas)" "chmod g+ws $INPUTDIR/tmp"
+  tenta_gravar "$INPUTDIR/logs" "logs" "chmod g+ws $INPUTDIR/logs"
+  # Gravar no diretorio nao basta para APAGAR o que ja esta la: remover um arquivo
+  # exige escrita no diretorio que o contem, em todos os niveis. Uma coleta feita
+  # por outro usuario, com modo 755, so e removivel por quem a criou.
+  presos=""
+  for c in $( cd "$KIT" 2>/dev/null && ls -d coleta_[0-9]*_[0-9]*/ 2>/dev/null | sed 's|/$||' ); do
+    if [ -n "$(find "$KIT/$c" -type d ! -writable 2>/dev/null | head -1)" ]; then
+      presos="$presos $c"
+    fi
+  done
+  if [ -n "$presos" ]; then
+    t_falta "coletas que este usuario nao consegue apagar (a retencao nao as removeria):$presos" \
+            "chmod -R g+w $KIT/coleta_*   (e o usuario no grupo $grupo)"
+  else
+    t_ok "as coletas existentes podem ser removidas pela retencao"
+  fi
+  # arquivos que ja existem e que a reconstrucao regrava no mesmo lugar
+  for f in "$TOPO/topologia.json" "$FACTS/inventory.csv" "$INPUTDIR/logs/topology.log" \
+           "$INPUTDIR/html/topologia.json" "$INPUTDIR/www/topologia.json"; do
+    [ -e "$f" ] || continue
+    if [ -w "$f" ]; then t_ok "regrava $(printf '%s' "$f" | sed "s|$INPUTDIR/||")"
+    else t_falta "nao regrava $f (dono: $(ls -ld "$f" | awk '{print $3":"$4}'))" "chgrp $grupo $f && chmod g+w $f"; fi
+  done
+  [ -e "$FACTS/coleta-auto" ] && [ ! -L "$FACTS/coleta-auto" ] && \
+    t_falta "$FACTS/coleta-auto existe e nao e um link" "mv $FACTS/coleta-auto $FACTS/coleta-auto.manual"
+
+  echo "-- ferramentas e SSH --"
+  for c in timeout ssh awk sort; do
+    if command -v "$c" >/dev/null 2>&1; then t_ok "$c: $(command -v "$c")"
+    else t_falta "comando ausente no PATH do cron: $c"; fi
+  done
+  if command -v python3 >/dev/null 2>&1 || [ -n "${TOPO_PY:-}" ]; then t_ok "python3 para o gancho"
+  else t_falta "python3 nao esta no PATH deste usuario (o gancho tambem procura em /usr/bin, SCL e TOPO_PY)" \
+               "yum install -y python3  ou  TOPO_PY=/caminho em topology/coleta.conf"; fi
+  chaves=""
+  for k in "${HOME:-/nonexistent}"/.ssh/id_rsa "${HOME:-/nonexistent}"/.ssh/id_ed25519 \
+           "${HOME:-/nonexistent}"/.ssh/id_ecdsa; do
+    [ -f "$k" ] && chaves="$chaves $k"
+  done
+  if [ -z "$chaves" ]; then
+    t_falta "nenhuma chave SSH privada em ${HOME:-?}/.ssh: o collect.sh usa a chave padrao de quem o roda, em BatchMode" \
+            "copie a chave de acesso a ${SSH_USER:-netuss} para ${HOME:-?}/.ssh/ com chmod 600"
+  else
+    for k in $chaves; do
+      # ssh-keygen -y com senha vazia so tem sucesso numa chave SEM senha
+      if command -v ssh-keygen >/dev/null 2>&1 && ! ssh-keygen -y -P '' -f "$k" >/dev/null 2>&1; then
+        t_falta "a chave $k tem senha (ou nao e legivel): sem agente SSH sob o cron, o BatchMode recusa" \
+                "ssh-keygen -p -f $k   (nova senha: vazia)"
+      else
+        t_ok "chave SSH sem senha: $k"
+      fi
+    done
+  fi
+  primeiro=$(awk 'NF && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9]/ {print $1; exit}' "$COLETA_HOSTS" 2>/dev/null)
+  echo "   teste manual de ponta a ponta (nao executado aqui):"
+  echo "     ssh -o BatchMode=yes -o ConnectTimeout=10 ${SSH_USER:-netuss}@${primeiro:-<host>} 'sudo -n true' && echo OK"
+
+  echo
+  if [ "$FALTAS" -eq 0 ]; then
+    echo "tudo certo para '$eu' rodar a coleta agendada."
+    exit 0
+  fi
+  echo "$FALTAS problema(s) para '$eu'. Corrija e rode -t de novo."
+  exit 1
 fi
 
 # ------------------------------------------------------------------ trava
@@ -171,7 +319,11 @@ lista_coletas() {
 retencao_kit() {
   lista_coletas | tail -n +$((COLETA_GUARDAR + 1)) | while read -r c; do
     [ -n "$c" ] || continue
-    rm -rf "${KIT:?}/$c" "${KIT:?}/$c.tar" "${KIT:?}/$c.tar.gz"
+    # sem esta checagem a falha era invisivel: o agendamento descarta a saida,
+    # e uma coleta de outro dono (ou sem escrita de grupo) nunca saia do disco
+    if ! rm -rf "${KIT:?}/$c" "${KIT:?}/$c.tar" "${KIT:?}/$c.tar.gz" 2>/dev/null; then
+      log "aviso: nao consegui remover $KIT/$c (dono: $(ls -ld "$KIT/$c" 2>/dev/null | awk '{print $3":"$4}')). Rode: sh $0 -t"
+    fi
   done
 }
 
@@ -376,7 +528,8 @@ rm -f "$SAIDA"
 atual=$(readlink "$DESTINO" 2>/dev/null | sed 's|.*/||')
 ls -1 "$VERSOES" 2>/dev/null | sort -r | tail -n +$((COLETA_GUARDAR + 1)) | while read -r v; do
   [ "$v" = "$atual" ] && continue
-  [ -n "$v" ] && rm -rf "${VERSOES:?}/$v"
+  [ -n "$v" ] || continue
+  rm -rf "${VERSOES:?}/$v" 2>/dev/null || log "aviso: nao consegui remover $VERSOES/$v. Rode: sh $0 -t"
 done
 # importar uma coleta escolhida a mao nao pode apagar coletas: a que o usuario
 # apontou pode ser justamente a mais antiga
